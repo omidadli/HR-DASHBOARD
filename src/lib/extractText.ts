@@ -15,6 +15,7 @@ export interface TextExtractionResult {
   text: string;
   success: boolean;
   unjudgeableReason?: string;
+  isVisualDocument?: boolean;
 }
 
 export interface UnpackedFile {
@@ -25,6 +26,29 @@ export interface UnpackedFile {
 
 function getExtension(fileName: string): string {
   return fileName.split('.').pop()?.toLowerCase() || '';
+}
+
+/**
+ * Lightweight binary text extractor for legacy .doc (Word 97-2003)
+ */
+function extractFromDocBinary(buffer: ArrayBuffer): string {
+  try {
+    const bytes = new Uint8Array(buffer);
+    const textDecoder = new TextDecoder('utf-8', { fatal: false });
+    // Look for UTF-16LE text streams common in Word FIB structures
+    const utf16Decoder = new TextDecoder('utf-16le', { fatal: false });
+    const utf16Text = utf16Decoder.decode(bytes);
+    // Filter out control and noise characters
+    const cleanU16 = utf16Text.replace(/[^\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF\w\s.,;:!?@#%&*()_\-+=/]/g, ' ').replace(/\s{2,}/g, ' ');
+    if (cleanU16.trim().length > 100) {
+      return cleanU16.trim();
+    }
+    const plainText = textDecoder.decode(bytes);
+    const cleanPlain = plainText.replace(/[^\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF\w\s.,;:!?@#%&*()_\-+=/]/g, ' ').replace(/\s{2,}/g, ' ');
+    return cleanPlain.trim();
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -162,14 +186,25 @@ export async function extractResumeContent(file: File | Blob, fileName: string):
     if (ext === 'pdf') {
       const rawText = await extractFromPdfWithCoordinates(buffer);
       const normalized = normalizePersianText(rawText);
-      if (!normalized || normalized.length < 20) {
+      // If PDF has readable text layer, use it. If not (scanned or image-based),
+      // mark isVisualDocument = true so Gemini multimodal can evaluate directly!
+      if (!normalized || normalized.length < 30) {
         return {
-          text: '',
-          success: false,
-          unjudgeableReason: 'فایل PDF بدون لایه متنی است (اسکن‌شده یا تصویر غیرقابل خواندن)',
+          text: normalized || '',
+          success: true,
+          isVisualDocument: true,
         };
       }
-      return { text: normalized, success: true };
+      return { text: normalized, success: true, isVisualDocument: false };
+    }
+
+    if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
+      // Direct visual document supported via Gemini multimodal vision
+      return {
+        text: '',
+        success: true,
+        isVisualDocument: true,
+      };
     }
 
     if (ext === 'docx') {
@@ -186,17 +221,22 @@ export async function extractResumeContent(file: File | Blob, fileName: string):
     }
 
     if (ext === 'doc') {
+      const rawText = extractFromDocBinary(buffer);
+      const normalized = normalizePersianText(rawText);
+      if (normalized && normalized.length >= 30) {
+        return { text: normalized, success: true };
+      }
       return {
         text: '',
         success: false,
-        unjudgeableReason: 'فرمت doc قدیمی پشتیبانی نمی‌شود (لطفاً به docx یا pdf تبدیل کنید)',
+        unjudgeableReason: 'فایل doc قدیمی متن استخراج‌پذیری ندارد (لطفاً به docx یا pdf تبدیل فرمایید)',
       };
     }
 
     if (['txt', 'rtf', 'md'].includes(ext)) {
       const rawText = extractFromPlainText(buffer);
       const normalized = normalizePersianText(rawText);
-      if (!normalized || normalized.length < 50) {
+      if (!normalized || normalized.length < 20) {
         return {
           text: '',
           success: false,
@@ -209,7 +249,7 @@ export async function extractResumeContent(file: File | Blob, fileName: string):
     return {
       text: '',
       success: false,
-      unjudgeableReason: `فرمت فایل (${ext}) معتبر نیست (فرمت‌های مجاز: PDF, Word DOCX, TXT, ZIP)`,
+      unjudgeableReason: `فرمت فایل (${ext}) معتبر نیست (فرمت‌های مجاز: PDF, Word, تصاویر رزومه, TXT, ZIP)`,
     };
   } catch (err: any) {
     return {
@@ -222,9 +262,12 @@ export async function extractResumeContent(file: File | Blob, fileName: string):
 
 /**
  * Handles multi-file unpacking including ZIP files.
- * Recursively extracts files from ZIP archives.
+ * Recursively extracts files from ZIP archives with real-time progress callbacks.
  */
-export async function processUploadFiles(rawFiles: File[]): Promise<File[]> {
+export async function processUploadFiles(
+  rawFiles: File[],
+  onProgress?: (unpackedCount: number, totalEntries: number, currentName: string) => void
+): Promise<File[]> {
   const flattened: File[] = [];
 
   for (const f of rawFiles) {
@@ -235,27 +278,33 @@ export async function processUploadFiles(rawFiles: File[]): Promise<File[]> {
         const loaded = await zip.loadAsync(f);
         const entries = Object.keys(loaded.files);
 
-        for (const relativePath of entries) {
-          const zipEntry = loaded.files[relativePath];
-          // Skip folders or OS X metadata (__MACOSX)
-          if (zipEntry.dir || relativePath.includes('__MACOSX') || relativePath.startsWith('.')) {
-            continue;
+        // Filter valid resume entries
+        const validKeys = entries.filter((relPath) => {
+          const entry = loaded.files[relPath];
+          if (entry.dir || relPath.includes('__MACOSX') || relPath.startsWith('.') || relPath.includes('/.')) {
+            return false;
           }
+          const entryExt = getExtension(entry.name);
+          return ['pdf', 'docx', 'doc', 'txt', 'rtf', 'md', 'jpg', 'jpeg', 'png', 'webp'].includes(entryExt);
+        });
 
-          const entryExt = getExtension(zipEntry.name);
-          if (['pdf', 'docx', 'txt', 'rtf', 'md', 'doc'].includes(entryExt)) {
-            const blob = await zipEntry.async('blob');
-            const innerFileName = zipEntry.name.split('/').pop() || zipEntry.name;
-            const unpackedFile = new File([blob], innerFileName, {
-              type: blob.type || 'application/octet-stream',
-              lastModified: zipEntry.date?.getTime() || Date.now(),
-            });
-            flattened.push(unpackedFile);
+        let count = 0;
+        for (const relativePath of validKeys) {
+          const zipEntry = loaded.files[relativePath];
+          const blob = await zipEntry.async('blob');
+          const innerFileName = zipEntry.name.split('/').pop() || zipEntry.name;
+          const unpackedFile = new File([blob], innerFileName, {
+            type: blob.type || 'application/octet-stream',
+            lastModified: zipEntry.date?.getTime() || Date.now(),
+          });
+          flattened.push(unpackedFile);
+          count++;
+          if (onProgress) {
+            onProgress(count, validKeys.length, innerFileName);
           }
         }
       } catch (err) {
         console.error('Error unpacking zip file:', err);
-        // keep the original zip so it reports unjudgeable/corrupt
         flattened.push(f);
       }
     } else {

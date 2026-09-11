@@ -72,7 +72,7 @@ export const StepperHeader: React.FC<StepperHeaderProps> = ({ currentStep, onSte
                   >
                     {step.label}
                   </span>
-                  <span className="text-[11px] text-text-3 leading-tight mt-0.5 max-w-[140px] truncate">
+                  <span className="text-xs text-text-3 leading-tight mt-0.5 max-w-[140px] truncate">
                     {step.sublabel}
                   </span>
                 </div>

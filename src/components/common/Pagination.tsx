@@ -26,7 +26,7 @@ export const Pagination: React.FC<PaginationProps> = ({ page, totalPages, onChan
   }
 
   const btnBase =
-    'min-w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black transition-all cursor-pointer select-none';
+    'min-w-10 h-10 rounded-control flex items-center justify-center text-sm font-bold tabular-nums transition-all cursor-pointer select-none';
 
   return (
     <div className="flex items-center justify-center gap-1.5 pt-2" dir="rtl">

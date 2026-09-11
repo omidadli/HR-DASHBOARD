@@ -1,48 +1,68 @@
 <svg viewBox="0 0 500 360" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Green Fold behind droplet -->
+  <defs>
+    <linearGradient id="seilanehNeonGrad" x1="14" y1="100" x2="476" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#05E590" />
+      <stop offset="45%" stop-color="#00C87B" />
+      <stop offset="100%" stop-color="#00AF6B" />
+    </linearGradient>
+    <linearGradient id="seilanehDropGrad" x1="255" y1="65" x2="255" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#05E590" />
+      <stop offset="100%" stop-color="#00BA73" />
+    </linearGradient>
+    <filter id="subtleGlow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00C87B" flood-opacity="0.18" />
+    </filter>
+  </defs>
+
+  <!-- Dark fold / leaf cylinder behind droplet -->
   <path
-    d="M 195 125 C 200 95 220 85 240 92 C 260 98 275 110 310 135 L 290 148 C 265 130 240 120 220 122 Z"
-    fill="#00a87e"
+    d="M 195 130 
+       C 200 102, 218 92, 238 98 
+       C 255 104, 270 115, 305 138 
+       L 285 152 
+       C 260 134, 238 124, 218 126 Z"
+    fill="#009E60"
   />
 
   <!-- Main flowing leaf banner -->
   <path
-    d="M 15 210 
-       C 85 155, 165 130, 230 128 
-       C 255 128, 280 132, 310 138 
-       C 370 120, 425 102, 475 82 
-       C 420 140, 350 205, 290 275 
-       C 235 215, 120 205, 15 210 Z"
-    fill="#00a87e"
+    d="M 14 275 
+       C 85 195, 165 155, 230 152 
+       C 255 152, 280 156, 310 162 
+       C 370 144, 425 124, 476 102 
+       C 420 165, 350 250, 290 360 
+       C 235 285, 120 270, 14 275 Z"
+    fill="url(#seilanehNeonGrad)"
+    filter="url(#subtleGlow)"
   />
 
-  <!-- White crease extending from droplet -->
+  <!-- White crease extending from droplet to the right -->
   <path
-    d="M 268 135 Q 290 145 315 152"
+    d="M 270 168 Q 295 178 318 185"
     stroke="#ffffff"
-    stroke-width="4"
+    stroke-width="4.5"
     stroke-linecap="round"
   />
 
-  <!-- Water Droplet White Border / Mask -->
+  <!-- Water Droplet White Halo / Outer Contour -->
   <path
-    d="M 255 52 
-       C 258 52, 284 96, 284 118 
-       C 284 135, 271 148, 255 148 
-       C 239 148, 226 135, 226 118 
-       C 226 96, 252 52, 255 52 Z"
-    fill="#00a87e"
+    d="M 255 65 
+       C 258 65, 285 115, 285 148 
+       C 285 175, 272 198, 255 198 
+       C 238 198, 225 175, 225 148 
+       C 225 115, 252 65, 255 65 Z"
+    fill="url(#seilanehDropGrad)"
     stroke="#ffffff"
-    stroke-width="9"
+    stroke-width="10"
     stroke-linejoin="round"
   />
 
-  <!-- Droplet Highlight (Inner Reflection) -->
+  <!-- Droplet Highlight (Inner White Reflection Arc) -->
   <path
-    d="M 245 88 
-       C 240 98, 238 108, 240 122 
-       C 236 115, 236 102, 242 90 
-       C 243 88, 244 87, 245 88 Z"
+    d="M 243 105 
+       C 238 118, 237 135, 242 152 
+       C 237 142, 237 125, 241 108 
+       C 241 106, 242 105, 243 105 Z"
     fill="#ffffff"
   />
 </svg>

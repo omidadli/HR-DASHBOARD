@@ -231,9 +231,16 @@ export interface ResumeFileItem {
 export interface ScreeningProgressUpdate {
   items: ResumeFileItem[];
   currentEvaluatingName?: string;
+  activeEvaluatingNames?: string[];
   processedCount: number;
   totalCount: number;
   statusText: string;
+  subStatusText?: string;
+  phase?: 'extracting' | 'evaluating' | 'calibrating' | 'done';
+  extractedCount?: number;
+  estimatedSecondsRemaining?: number;
+  speedPerMinute?: number;
+  overallPercent?: number;
 }
 
 // ---------- Bank ----------

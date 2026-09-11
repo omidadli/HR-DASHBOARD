@@ -131,6 +131,16 @@ async function startServer() {
 
       if (!reason) {
         const text = String(extractedText || '');
+        const ext = String(fileName).split('.').pop()?.toLowerCase() || '';
+        const mimeMap: Record<string, string> = {
+          pdf: 'application/pdf',
+          png: 'image/png',
+          jpg: 'image/jpeg',
+          jpeg: 'image/jpeg',
+          webp: 'image/webp',
+        };
+        const mimeType = mimeMap[ext] || 'application/pdf';
+
         evaluation = await evaluateResumeV2(
           batch.departmentName,
           batch.roleTitle,
@@ -138,13 +148,12 @@ async function startServer() {
           batch.understanding,
           batch.answers,
           text,
-          String(fileName)
+          String(fileName),
+          typeof fileBase64 === 'string' && fileBase64.length > 50 ? fileBase64 : undefined,
+          mimeType
         );
-        if (evaluation.flags.scannedNoText || evaluation.flags.insufficientInfo) {
-          reason =
-            evaluation.flags.scannedNoText || text.trim().length < 50
-              ? 'فایل لایه متنی قابل‌خواندن ندارد (احتمالاً اسکن یا تصویری است)'
-              : 'اطلاعات رزومه برای قضاوت تخصصی کافی نیست';
+        if (evaluation.flags.scannedNoText) {
+          reason = 'فایل رزومه فاقد محتوای خواندنی است (فایل خالی، اسکن ناخوانا یا تصویر بدون متن)';
         }
       }
 

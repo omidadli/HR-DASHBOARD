@@ -29,16 +29,16 @@ export const Toaster: React.FC = () => {
   }, []);
 
   return (
-    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center gap-2 no-print pointer-events-none">
+    <div className="fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center gap-2 no-print pointer-events-none">
       {items.map((t) => (
         <div
           key={t.id}
-          className={`animate-fadeIn pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-2xl shadow-lg border text-xs sm:text-sm font-bold max-w-[92vw] ${
+          className={`animate-fadeIn pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-control shadow-e2 border text-xs sm:text-sm font-bold max-w-[92vw] ${
             t.type === 'success'
-              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              ? 'bg-brand-soft border-brand/30 text-brand-700'
               : t.type === 'error'
-              ? 'bg-rose-50 border-rose-200 text-rose-800'
-              : 'bg-blue-50 border-blue-200 text-blue-800'
+              ? 'bg-danger-soft border-[var(--danger-border)] text-danger'
+              : 'bg-info-soft border-info/30 text-info'
           }`}
         >
           {t.type === 'success' ? (
@@ -50,7 +50,7 @@ export const Toaster: React.FC = () => {
           <button
             type="button"
             onClick={() => setItems((prev) => prev.filter((x) => x.id !== t.id))}
-            className="opacity-50 hover:opacity-100 cursor-pointer"
+            className="w-7 h-7 rounded-control flex items-center justify-center opacity-60 hover:opacity-100 cursor-pointer shrink-0"
           >
             <X className="w-3.5 h-3.5" />
           </button>

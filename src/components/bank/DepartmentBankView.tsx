@@ -180,7 +180,7 @@ export const DepartmentBankView: React.FC<Props> = ({ departmentId, initialQuery
   };
 
   const chip = (active: boolean) =>
-    `px-3 py-1.5 rounded-control text-xs font-bold border cursor-pointer transition-all min-h-[34px] ${
+    `px-3 py-1.5 rounded-control text-xs font-bold border cursor-pointer transition-all min-h-[38px] sm:min-h-[34px] ${
       active ? 'bg-brand text-white border-brand shadow-xs' : 'bg-surface-1 text-text-2 border-border-default hover:border-brand/40'
     }`;
 
@@ -216,7 +216,7 @@ export const DepartmentBankView: React.FC<Props> = ({ departmentId, initialQuery
   };
 
   return (
-    <div className="w-full max-w-4xl mx-auto px-4 py-6 sm:py-8 flex flex-col gap-4">
+    <div className="w-full max-w-[720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-4">
       {/* Header */}
       <div className="flex items-center gap-3">
         <button

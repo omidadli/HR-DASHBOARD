@@ -63,7 +63,7 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
       : 'bg-surface-2 text-text-2 border-border-default';
 
   const actionBtn =
-    'min-h-[38px] inline-flex items-center justify-center gap-1.5 rounded-control border text-xs font-medium cursor-pointer transition-all disabled:opacity-60 disabled:cursor-wait px-2.5 py-1.5 shadow-xs';
+    'min-h-[44px] sm:min-h-[38px] inline-flex items-center justify-center gap-1.5 rounded-control border text-xs font-medium cursor-pointer transition-all disabled:opacity-60 disabled:cursor-wait px-2 sm:px-2.5 py-2 sm:py-1.5 shadow-xs';
 
   return (
     <div
@@ -101,7 +101,7 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
               )}
               {record.engine === 'local' && (
                 <span
-                  className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-3 border border-border-default"
+                  className="text-xs font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-3 border border-border-default"
                   title="این تحلیل با موتور محلی انجام شده است"
                 >
                   تحلیل محلی
@@ -109,7 +109,7 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
               )}
               {record.messageStatus === 'sent' && (
                 <span
-                  className="inline-flex items-center gap-1 text-[11px] font-medium text-brand-700 bg-brand-soft border border-brand-200 px-2 py-0.5 rounded-full"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 bg-brand-soft border border-brand-200 px-2 py-0.5 rounded-full"
                   title={`پیام ارسال شده در ${record.lastMessagedAtJalali || ''}`}
                 >
                   <CheckCheck className="w-3.5 h-3.5 text-brand" />
@@ -143,8 +143,8 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
         {/* Score */}
         {meta && record.score > 0 && (
           <div className={`flex flex-col items-center justify-center px-3.5 py-1.5 rounded-control border shrink-0 ${meta.scoreBox}`}>
-            <span className="text-2xl font-bold leading-none">{toPersianDigits(record.score)}</span>
-            <span className="text-[10px] font-medium opacity-80 mt-1">از ۱۰۰</span>
+            <span className="text-2xl font-bold leading-none tabular-nums">{toPersianDigits(record.score)}</span>
+            <span className="text-xs font-medium opacity-80 mt-1">از ۱۰۰</span>
           </div>
         )}
       </div>

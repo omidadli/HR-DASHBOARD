@@ -51,7 +51,7 @@ export const BankHome: React.FC<BankHomeProps> = ({ onOpenDepartment, onOpenResu
   const total = counts.reduce((s, c) => s + c.count, 0);
 
   return (
-    <div className="w-full max-w-4xl mx-auto px-4 py-6 sm:py-8 flex flex-col gap-5">
+    <div className="w-full max-w-[720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-5">
       <div className="text-center flex flex-col items-center gap-2">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-soft text-brand text-xs font-bold border border-brand/20">
           <Library className="w-3.5 h-3.5" />
@@ -132,13 +132,13 @@ export const BankHome: React.FC<BankHomeProps> = ({ onOpenDepartment, onOpenResu
         <>
           {/* Department grid */}
           {loading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-3.5">
               {Array.from({ length: 9 }).map((_, i) => (
                 <div key={i} className="h-28 rounded-card bg-surface-1 border border-border-default animate-pulse" />
               ))}
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-3.5">
               {DEPARTMENTS.map((d) => {
                 const Icon = d.icon;
                 const count = countFor(d.id);
@@ -157,11 +157,11 @@ export const BankHome: React.FC<BankHomeProps> = ({ onOpenDepartment, onOpenResu
                     <span className={`w-10 h-10 rounded-control border border-border-default bg-surface-2 text-text-2 flex items-center justify-center ${empty ? 'opacity-60' : ''}`}>
                       <Icon className="w-5 h-5" />
                     </span>
-                    <span className={`text-xs sm:text-[13px] font-bold leading-tight ${empty ? 'text-text-3' : 'text-text-1'}`}>
+                    <span className={`text-xs sm:text-sm font-bold leading-tight ${empty ? 'text-text-3' : 'text-text-1'}`}>
                       {d.name}
                     </span>
                     <span
-                      className={`mt-auto text-xs font-medium px-2.5 py-0.5 rounded-full ${
+                      className={`mt-auto text-xs font-medium px-2.5 py-0.5 rounded-full tabular-nums ${
                         empty ? 'bg-surface-2 text-text-3' : 'bg-brand-soft text-brand'
                       }`}
                     >

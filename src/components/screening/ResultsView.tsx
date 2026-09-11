@@ -12,6 +12,7 @@ import {
   XCircle,
   CheckCircle2,
 } from 'lucide-react';
+import { SilanehLogo } from '../common/SilanehLogo';
 import {
   Recommendation,
   ResumeCategory,
@@ -177,10 +178,9 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
 
   if (loading) {
     return (
-      <div className="w-full max-w-4xl mx-auto px-4 py-6 sm:py-8 flex flex-col gap-4 animate-pulse">
-        <div className="h-24 rounded-card bg-surface-1 border border-border-default" />
-        <div className="h-16 rounded-card bg-surface-1 border border-border-default" />
-        <div className="h-12 rounded-control bg-surface-1 border border-border-default" />
+      <div className="w-full max-w-[720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-5 animate-pulse">
+        <div className="h-28 rounded-card bg-surface-1 border border-border-default" />
+        <div className="h-14 rounded-card bg-surface-1 border border-border-default" />
         <div className="flex flex-col gap-3">
           {[0, 1, 2].map((i) => (
             <div key={i} className="h-44 rounded-card bg-surface-1 border border-border-default" />
@@ -214,14 +214,14 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         key={t}
         type="button"
         onClick={() => setActiveTab(t)}
-        className={`flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 rounded-control border text-xs sm:text-sm font-bold px-3 cursor-pointer transition-all ${
+        className={`flex-1 min-h-[44px] inline-flex items-center justify-center gap-1.5 sm:gap-2 rounded-control border text-xs sm:text-sm font-bold px-2 sm:px-3 cursor-pointer transition-all ${
           active ? meta.tabActive : meta.tabIdle
         }`}
       >
         {icon}
         <span>{meta.label}</span>
         <span
-          className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+          className={`text-xs font-bold px-1.5 sm:px-2 py-0.5 rounded-full tabular-nums ${
             active ? 'bg-white/25' : 'bg-surface-2 text-text-3'
           }`}
         >
@@ -242,10 +242,13 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
   };
 
   return (
-    <div className="w-full max-w-4xl mx-auto px-4 py-6 sm:py-8 flex flex-col gap-5">
+    <div className="w-full max-w-[720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-5">
       {/* Print-only Report Header */}
       <div className="hidden print-only mb-4 pb-4 border-b border-gray-300">
-        <h1 className="text-lg font-bold text-gray-900">گزارش غربالگری هوشمند رزومه‌ها — هلدینگ سیلانه سبز</h1>
+        <div className="flex items-center justify-between gap-4 mb-2">
+          <h1 className="text-lg font-bold text-gray-900">گزارش غربالگری هوشمند رزومه‌ها — هلدینگ سیلانه سبز</h1>
+          <SilanehLogo className="h-10 w-auto" />
+        </div>
         <div className="text-xs text-gray-600 mt-1 flex gap-4">
           <span><strong>موقعیت:</strong> {batch.roleTitle || batch.departmentName}</span>
           <span><strong>دپارتمان:</strong> {batch.departmentName}</span>
@@ -260,39 +263,40 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         </div>
       </div>
       {/* Summary banner */}
-      <div className="bg-brand text-white p-5 rounded-card shadow-e1 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-control bg-white/15 flex items-center justify-center shrink-0">
-            <Award className="w-6 h-6" />
+      <div className="relative overflow-hidden bg-gradient-to-r from-brand via-brand-600 to-brand-700 text-white p-5 rounded-card shadow-[0_10px_25px_-5px_rgba(0,200,123,0.35)] border border-white/25 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="absolute top-0 right-0 -mt-8 -mr-8 w-40 h-40 bg-white/10 rounded-full blur-2xl pointer-events-none" />
+        <div className="flex flex-col sm:flex-row items-center sm:items-center gap-3.5 text-center sm:text-right relative z-10">
+          <div className="w-11 h-11 rounded-control bg-white/20 backdrop-blur-sm border border-white/30 flex items-center justify-center shrink-0 shadow-xs">
+            <Award className="w-6 h-6 text-white" />
           </div>
           <div>
             <h2 className="text-base sm:text-lg font-bold leading-snug">
               از {toPersianDigits(batch.stats.total)} رزومه، {toPersianDigits(batch.stats.interview)} نفر برای مصاحبه پیشنهاد شده‌اند
             </h2>
-            <span className="text-xs text-white/80 mt-0.5 block">
+            <span className="text-xs text-white/90 mt-0.5 block font-medium">
               {batch.roleTitle || batch.departmentName} — {batch.createdAtJalali}
             </span>
           </div>
         </div>
-        <div className="flex items-center gap-2 flex-wrap justify-center no-print">
+        <div className="flex items-center gap-2 flex-wrap justify-center sm:justify-end no-print w-full sm:w-auto">
           <button
             type="button"
             onClick={() => void exportBatchToExcel(batch, records)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-control bg-white text-brand text-xs font-bold cursor-pointer hover:bg-white/90 shadow-xs"
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 min-h-[40px] rounded-control bg-white text-brand text-xs font-bold cursor-pointer hover:bg-white/90 shadow-xs"
           >
             <Download className="w-4 h-4" /> دانلود گزارش
           </button>
           <button
             type="button"
             onClick={() => window.print()}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control bg-white/20 text-white text-xs font-bold cursor-pointer hover:bg-white/30"
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 min-h-[40px] rounded-control bg-white/20 text-white text-xs font-bold cursor-pointer hover:bg-white/30"
           >
             <Printer className="w-4 h-4" /> چاپ
           </button>
           <button
             type="button"
             onClick={onNewScreening}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control bg-white/20 text-white text-xs font-bold cursor-pointer hover:bg-white/30"
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 min-h-[40px] rounded-control bg-white/20 text-white text-xs font-bold cursor-pointer hover:bg-white/30"
           >
             <RotateCcw className="w-4 h-4" /> جدید
           </button>
@@ -313,7 +317,7 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
       </div>
 
       {/* Category tabs */}
-      <div className="sticky top-14 z-30 bg-surface-0/95 backdrop-blur py-2 -mx-4 px-4 no-print">
+      <div className="sticky top-14 sm:top-16 z-30 bg-surface-0/95 backdrop-blur py-2.5 -mx-4 px-4 sm:mx-0 sm:px-0 no-print">
         <div className="flex gap-2">
           {tabButton('INTERVIEW', <CheckCircle2 className="w-4 h-4" />)}
           {tabButton('REVIEW', <Search className="w-4 h-4" />)}
@@ -323,7 +327,7 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
 
       {/* List */}
       {visible.length === 0 ? (
-        <div className="p-10 text-center bg-surface-1 rounded-2xl border border-dashed border-border-default text-xs text-text-3 font-bold">
+        <div className="p-10 text-center bg-surface-1 rounded-card border border-dashed border-border-default text-xs text-text-3 font-bold">
           <Users className="w-9 h-9 mx-auto mb-2 opacity-50" />
           در این دسته رزومه‌ای نیست.
         </div>

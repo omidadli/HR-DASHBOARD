@@ -15,6 +15,8 @@ import { ResultsView } from './components/screening/ResultsView';
 import { StepperHeader } from './components/screening/StepperHeader';
 import { BankHome } from './components/bank/BankHome';
 import { DepartmentBankView } from './components/bank/DepartmentBankView';
+import { SplashScreen } from './components/common/SplashScreen';
+import { playCompletionChime } from './lib/sound';
 
 type TopTab = 'screening' | 'bank';
 type ScreeningView = 'home' | 'processing' | 'results';
@@ -40,6 +42,7 @@ const EMPTY_PROGRESS: ScreeningProgressUpdate = {
 };
 
 export function App() {
+  const [showSplash, setShowSplash] = useState(true);
   const [tab, setTab] = useState<TopTab>('screening');
   const [view, setView] = useState<ScreeningView>('home');
   const [bankView, setBankView] = useState<BankView>({ screen: 'home' });
@@ -55,7 +58,7 @@ export function App() {
     setProgress({
       ...EMPTY_PROGRESS,
       totalCount: payload.files.length,
-      statusText: 'هوش مصنوعی در حال آماده‌سازی تحلیل است… 🧠',
+      statusText: 'هوش مصنوعی در حال آماده‌سازی تحلیل است…',
     });
     setView('processing');
 
@@ -80,6 +83,8 @@ export function App() {
       );
       setBatchId(result.batchId);
       setView('results');
+      playCompletionChime();
+      toast('تحلیل و غربالگری هوشمند رزومه‌ها با موفقیت به پایان رسید.', 'success');
       if (result.localCount > 0 && result.aiCount === 0) {
         toast(
           'هوش مصنوعی در دسترس نبود؛ همه رزومه‌ها با موتور محلی (غیر هوشمند) تحلیل شدند. کلید/شبکه را بررسی کن.',
@@ -122,28 +127,35 @@ export function App() {
   return (
     <div
       dir="rtl"
-      className="min-h-screen bg-surface-0 text-text-1 flex flex-col font-sans antialiased selection:bg-brand-soft selection:text-brand"
+      className="min-h-screen bg-surface-0 text-text-1 flex flex-col font-sans antialiased selection:bg-brand-soft selection:text-brand overflow-x-hidden"
     >
       {/* Top header with the only two tabs */}
-      <header className="sticky top-0 z-40 bg-surface-1/95 backdrop-blur border-b border-border-default no-print">
-        <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <SilanehLogo className="w-8 h-8" />
+      <header className="sticky top-0 z-40 bg-surface-1/95 backdrop-blur border-b border-border-default no-print pt-[env(safe-area-inset-top)]">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-2.5 sm:gap-4">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <SilanehLogo className="h-7 sm:h-8.5 w-auto shrink-0" showGlow />
             <div className="leading-tight min-w-0">
-              <div className="text-xs sm:text-sm font-bold text-text-1 truncate">سیلانه سبز</div>
-              <div className="text-xs text-text-3 truncate">دستیار هوشمند غربالگری رزومه</div>
+              <div className="text-xs sm:text-sm font-bold text-text-1 truncate flex items-center gap-1.5">
+                <span>سیلانه سبز</span>
+                <span className="hidden sm:inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-brand-soft text-brand border border-brand/20">
+                  سامانه هوشمند
+                </span>
+              </div>
+              <div className="text-[11px] sm:text-xs text-text-3 truncate hidden sm:block">
+                غربالگری، انطباق شغلی و مدیریت رزومه‌ها
+              </div>
             </div>
           </div>
 
-          <nav className="flex items-center gap-1 bg-surface-2 rounded-control p-1">
+          <nav className="flex items-center gap-1 bg-surface-2 rounded-control p-1 shrink-0">
             <button
               type="button"
               onClick={() => setTab('screening')}
-              className={`inline-flex items-center gap-1.5 px-3 sm:px-4 h-8 rounded-[8px] text-xs font-bold cursor-pointer transition-all ${
+              className={`inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 h-9 sm:h-10 rounded-[8px] text-xs sm:text-xs font-bold cursor-pointer transition-all whitespace-nowrap ${
                 tab === 'screening' ? 'bg-brand text-white shadow-e1' : 'text-text-2 hover:text-brand'
               }`}
             >
-              <Sparkles className="w-3.5 h-3.5" />
+              <Sparkles className="w-3.5 h-3.5 shrink-0" />
               غربالگری جدید
             </button>
             <button
@@ -152,11 +164,11 @@ export function App() {
                 setTab('bank');
                 setBankView({ screen: 'home' });
               }}
-              className={`inline-flex items-center gap-1.5 px-3 sm:px-4 h-8 rounded-[8px] text-xs font-bold cursor-pointer transition-all ${
+              className={`inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 h-9 sm:h-10 rounded-[8px] text-xs sm:text-xs font-bold cursor-pointer transition-all whitespace-nowrap ${
                 tab === 'bank' ? 'bg-brand text-white shadow-e1' : 'text-text-2 hover:text-brand'
               }`}
             >
-              <Library className="w-3.5 h-3.5" />
+              <Library className="w-3.5 h-3.5 shrink-0" />
               بانک رزومه
             </button>
           </nav>
@@ -200,11 +212,12 @@ export function App() {
         )}
       </main>
 
-      <footer className="w-full py-3.5 text-center text-[10px] text-text-3 border-t border-border-default bg-surface-1 no-print">
+      <footer className="w-full py-3.5 text-center text-xs text-text-3 border-t border-border-default bg-surface-1 no-print">
         سامانه هوشمند غربالگری رزومه • هلدینگ سیلانه سبز
       </footer>
 
       <Toaster />
+      {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
     </div>
   );
 }

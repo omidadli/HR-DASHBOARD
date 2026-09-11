@@ -17,11 +17,14 @@
   --color-brand-50: var(--brand-50);
   --color-brand-100: var(--brand-100);
   --color-brand-200: var(--brand-200);
+  --color-brand-300: var(--brand-300);
+  --color-brand-400: var(--brand-400);
   --color-brand-500: var(--brand-500);
   --color-brand-600: var(--brand-600);
   --color-brand-700: var(--brand-700);
   --color-brand-900: var(--brand-900);
   --color-brand: var(--brand);
+  --color-brand-neon: var(--brand-neon);
   --color-brand-hover: var(--brand-hover);
   --color-brand-soft: var(--brand-soft);
 
@@ -79,7 +82,13 @@
   background-color: var(--brand-soft);
 }
 @utility text-brand {
-  color: var(--brand);
+  color: var(--brand-700);
+}
+@utility bg-brand-neon {
+  background-color: var(--brand-neon);
+}
+@utility shadow-neon {
+  box-shadow: 0 4px 20px -2px rgba(0, 200, 123, 0.45), 0 0 16px rgba(5, 229, 144, 0.3);
 }
 @utility bg-success-soft {
   background-color: var(--success-soft);
@@ -123,26 +132,31 @@
     --text-2: #4A554F;      /* Primary body text */
     --text-3: #73807A;      /* Subtle labels, captions (passes WCAG AA 4.5:1) */
 
-    /* Brand (Single green scale) */
-    --brand-50: #E9F5EF;
-    --brand-100: #C9E7D7;
-    --brand-200: #9CD3B7;
-    --brand-500: #12805C;
-    --brand-600: #0E6B4F;   /* Primary CTA */
-    --brand-700: #0B5740;   /* Hover state */
-    --brand-900: #0A3D2E;
+    /* Brand (Vibrant Modern Neon Emerald scale - bright, crisp & modern) */
+    --brand-50: #EDFCF6;   /* ultra light fresh luminous mint */
+    --brand-100: #D2F9E7;  /* soft clean mint */
+    --brand-200: #A5F3CF;  /* light neon mint */
+    --brand-300: #6EEAB6;  /* vibrant mint */
+    --brand-400: #2FE09B;  /* electric mint */
+    --brand-500: #00CF82;  /* luminous neon-emerald (matches logo) */
+    --brand-600: #00B873;  /* rich vibrant primary emerald */
+    --brand-700: #00995F;  /* deep accessible emerald for text on light bg */
+    --brand-800: #007A4B;  /* accessible high-contrast text on white */
+    --brand-900: #005A37;
 
-    --brand: var(--brand-600);
-    --brand-hover: var(--brand-700);
-    --brand-soft: var(--brand-50);
+    --brand: #00C87B;          /* vibrant neon-emerald (bright & luminous) */
+    --brand-neon: #05E590;     /* electric bright neon */
+    --brand-hover: #00DC87;    /* hover glow */
+    --brand-active: #00B36E;
+    --brand-soft: #EDFCF6;
 
     /* 4-1) Semantic (Only 3 categories + delete/error) */
-    /* Interview = Brand Green */
-    --success: var(--brand-600);
-    --success-soft: var(--brand-50);
-    --success-border: var(--brand-100);
-    --success-text: var(--brand-700);
-    --success-solid: var(--brand-600);
+    /* Interview = Brand Vibrant Neon Green */
+    --success: #00C87B;
+    --success-soft: #EDFCF6;
+    --success-border: #A5F3CF;
+    --success-text: #008A56;
+    --success-solid: #00C87B;
 
     /* Review = Monochromatic Amber */
     --warning: #D89B25;
@@ -305,6 +319,67 @@
   }
 }
 
+/* =========================================================
+   Modern Neon Glass Button & Element Styling
+   ========================================================= */
+button.bg-brand,
+.btn-brand,
+.btn-neon-glass {
+  background: linear-gradient(135deg, #05E590 0%, #00C87B 52%, #00AB6B 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.42) !important;
+  box-shadow: inset 0 1px 1.5px rgba(255, 255, 255, 0.7),
+              0 4px 18px -2px rgba(0, 200, 123, 0.45),
+              0 1px 3px rgba(0, 175, 107, 0.25) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  text-shadow: 0 1px 2px rgba(0, 60, 36, 0.28);
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  position: relative;
+}
+
+button.bg-brand:hover:not(:disabled),
+.btn-brand:hover:not(:disabled),
+.btn-neon-glass:hover:not(:disabled) {
+  background: linear-gradient(135deg, #1DF5A6 0%, #05DC8B 52%, #00BF77 100%) !important;
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.9),
+              0 6px 24px -2px rgba(0, 220, 135, 0.7),
+              0 0 20px rgba(5, 229, 144, 0.45) !important;
+  transform: translateY(-1.5px);
+}
+
+button.bg-brand:active:not(:disabled),
+.btn-brand:active:not(:disabled),
+.btn-neon-glass:active:not(:disabled) {
+  transform: translateY(0) scale(0.985) !important;
+  box-shadow: inset 0 1px 2px rgba(0, 40, 20, 0.18),
+              0 2px 8px rgba(0, 200, 123, 0.38) !important;
+}
+
+button.bg-brand:disabled,
+.btn-brand:disabled,
+.btn-neon-glass:disabled {
+  opacity: 0.55 !important;
+  cursor: not-allowed !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* Secondary frosted glass button */
+.btn-glass-subtle {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 200, 123, 0.2);
+  color: var(--brand-700);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.btn-glass-subtle:hover {
+  background: rgba(237, 252, 246, 0.9);
+  border-color: rgba(0, 200, 123, 0.45);
+  box-shadow: 0 4px 14px -2px rgba(0, 200, 123, 0.2);
+}
+
 /* Respect prefers-reduced-motion */
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after {
@@ -361,38 +436,7 @@
   }
 }
 
-/* Hide scrollbar helpers */
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
 /* Touch momentum scroll for iOS */
 .touch-scroll {
   -webkit-overflow-scrolling: touch;
-}
-
-/* Print Friendly Styles for Screen 3 Results */
-@media print {
-  body {
-    background-color: #ffffff !important;
-    color: #000000 !important;
-  }
-  .no-print {
-    display: none !important;
-  }
-  .print-only {
-    display: block !important;
-  }
-  .print-break-inside-avoid {
-    break-inside: avoid !important;
-    page-break-inside: avoid !important;
-  }
-  .print-page-break {
-    break-after: page !important;
-    page-break-after: always !important;
-  }
 }

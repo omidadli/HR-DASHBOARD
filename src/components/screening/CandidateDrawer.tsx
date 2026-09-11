@@ -45,7 +45,7 @@ const Fact: React.FC<{ icon: React.ReactNode; label: string; value: React.ReactN
   <div className="flex items-start gap-2.5 p-3 rounded-control bg-surface-2/60 border border-border-default">
     <span className="text-brand shrink-0 mt-0.5">{icon}</span>
     <div className="min-w-0 flex-1">
-      <div className="text-[11px] text-text-3 font-medium">{label}</div>
+      <div className="text-xs text-text-3 font-medium">{label}</div>
       <div className="text-xs font-bold text-text-1 truncate mt-0.5">{value}</div>
     </div>
   </div>
@@ -95,12 +95,12 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
       : 'text-danger bg-danger-soft border-[var(--danger-border)]';
 
   const actionBtn =
-    'flex-1 min-h-[38px] inline-flex items-center justify-center gap-1.5 rounded-control border text-xs font-medium cursor-pointer transition-all px-2.5 py-1.5 shadow-xs';
+    'flex-1 min-h-[44px] sm:min-h-[38px] inline-flex items-center justify-center gap-1.5 rounded-control border text-xs font-medium cursor-pointer transition-all px-2 sm:px-2.5 py-2 sm:py-1.5 shadow-xs';
 
   return (
     <div className="fixed inset-0 z-[80] bg-black/45 backdrop-blur-[2px]" onClick={onClose} dir="rtl">
       <aside
-        className="absolute top-0 bottom-0 right-0 w-full sm:w-[520px] bg-surface-0 shadow-2xl flex flex-col animate-fadeIn"
+        className="absolute top-0 bottom-0 right-0 w-full sm:w-[520px] bg-surface-0 shadow-2xl flex flex-col animate-fadeIn pb-[env(safe-area-inset-bottom)]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -132,7 +132,7 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
                   </span>
                 )}
                 {record.engine === 'local' && (
-                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-3 border border-border-default">
+                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-3 border border-border-default">
                     تحلیل محلی (غیر هوشمند)
                   </span>
                 )}
@@ -140,14 +140,14 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
             </div>
             {meta && (
               <div className={`flex flex-col items-center px-3.5 py-1.5 rounded-control border shrink-0 ${meta.scoreBox}`}>
-                <span className="text-xl font-bold leading-none">{toPersianDigits(record.score)}</span>
-                <span className="text-[10px] font-medium mt-1">از ۱۰۰</span>
+                <span className="text-xl font-bold leading-none tabular-nums">{toPersianDigits(record.score)}</span>
+                <span className="text-xs font-medium mt-1">از ۱۰۰</span>
               </div>
             )}
             <button
               type="button"
               onClick={onClose}
-              className="w-8 h-8 rounded-control flex items-center justify-center text-text-3 hover:bg-surface-2 cursor-pointer shrink-0"
+              className="w-9 h-9 rounded-control flex items-center justify-center text-text-3 hover:bg-surface-2 cursor-pointer shrink-0"
               title="بستن"
             >
               <X className="w-5 h-5" />
@@ -296,7 +296,7 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-bold text-text-1">• {w.point}</span>
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${sevBg}`}>
+                      <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full border ${sevBg}`}>
                         {sevLabel}
                       </span>
                     </div>
@@ -416,7 +416,7 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
         </div>
 
         {/* Footer actions */}
-        <div className="p-3 sm:p-4 border-t border-border-default bg-surface-1 grid grid-cols-2 sm:flex sm:items-stretch gap-2 shrink-0">
+        <div className="p-3 sm:p-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t border-border-default bg-surface-1 grid grid-cols-2 sm:flex sm:items-stretch gap-2 shrink-0">
           <button
             type="button"
             onClick={() => onMessage(record)}

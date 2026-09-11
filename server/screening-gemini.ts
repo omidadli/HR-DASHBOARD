@@ -54,7 +54,7 @@ export function resolveGeminiModel(): string {
       return clean;
     }
   }
-  return 'gemini-2.5-flash';
+  return 'gemini-3.8-flash';
 }
 
 /** Robust JSON extraction: strips markdown fences, finds outermost JSON, fixes trailing commas/control chars. */
@@ -144,15 +144,15 @@ export function recordGeminiFailure(isQuota: boolean, isHighDemand: boolean) {
 }
 
 async function generateWithFallback(
-  prompt: string,
+  contents: string | { parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> },
   config?: { temperature?: number; responseMimeType?: string; timeoutMs?: number }
 ): Promise<string> {
   const client = getGeminiClient();
   const primary = resolveGeminiModel();
   const candidateModels = Array.from(
-    new Set([primary, 'gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'])
+    new Set([primary, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'])
   );
-  const timeoutMs = config?.timeoutMs ?? 20_000;
+  const timeoutMs = config?.timeoutMs ?? 25_000;
 
   let lastError: any = null;
   for (const model of candidateModels) {
@@ -161,10 +161,11 @@ async function generateWithFallback(
       try {
         const call = client.models.generateContent({
           model,
-          contents: prompt,
+          contents,
           config: {
             temperature: config?.temperature ?? 0.1,
             responseMimeType: config?.responseMimeType ?? 'application/json',
+            ...(model.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
           },
         });
         const timeout = new Promise<never>((_, reject) =>
@@ -670,7 +671,9 @@ export function friendlyAiError(err: any): string {
 // ================================================================
 
 function optionLabel(q: ScreeningQuestion, value: string): string {
-  if (q.type === 'single') return q.options.find((o) => o.value === value)?.label || value;
+  if (q.type === 'single' && Array.isArray(q.options)) {
+    return q.options.find((o) => o.value === value)?.label || value;
+  }
   return value;
 }
 
@@ -681,7 +684,7 @@ export function buildAnswersBrief(
   const lines: string[] = [];
   const questions = Array.isArray(understanding?.questions) ? understanding.questions : [];
   for (const q of questions) {
-    const ans = answers[q.id];
+    const ans = answers?.[q.id];
     if (q.type === 'boolean') {
       const checked = ans === true || ans === undefined ? q.defaultChecked : Boolean(ans);
       // If answer equals the question default being false and left false → not a constraint
@@ -701,8 +704,10 @@ export function buildAnswersBrief(
         ? ans
         : typeof ans === 'string'
         ? [ans]
-        : q.defaultValues;
-      if (selected.length > 0) {
+        : Array.isArray(q.defaultValues)
+        ? q.defaultValues
+        : [];
+      if (selected.length > 0 && Array.isArray(q.options)) {
         const labels = selected.map((v) => {
           const opt = q.options.find((o) => o.value === v);
           return opt?.label || v;
@@ -746,11 +751,19 @@ export async function evaluateResumeV2(
   understanding: JobUnderstanding,
   answers: ScreeningAnswers,
   resumeText: string,
-  fileName: string
+  fileName: string,
+  fileBase64?: string,
+  fileMimeType?: string
 ): Promise<CandidateEvaluation> {
   const normalized = normalizePersianText(resumeText || '');
-  if (!normalized || normalized.trim().length < 50) {
-    const ev = emptyEvaluation('متن استخراج‌شده از رزومه برای تحلیل تخصصی کافی نیست (احتمالاً فایل اسکن‌شده یا تصویری است).');
+  const hasText = Boolean(normalized && normalized.trim().length >= 50);
+  const isMultimodal = Boolean(
+    fileBase64 &&
+    (fileMimeType === 'application/pdf' || fileMimeType?.startsWith('image/'))
+  );
+
+  if (!hasText && !isMultimodal) {
+    const ev = emptyEvaluation('متن استخراج‌شده از رزومه برای تحلیل تخصصی کافی نیست (احتمالاً فایل خالی یا خراب است).');
     ev.flags.scannedNoText = true;
     return ev;
   }
@@ -759,6 +772,8 @@ export async function evaluateResumeV2(
     .map((c) => `${c.id}. ${c.title} — وزن ${c.weight}٪ ${c.mustHave ? '(الزامی)' : ''}`)
     .join('\n');
   const answersBrief = buildAnswersBrief(understanding, answers);
+
+  const isUsingVision = !hasText && isMultimodal;
 
   const prompt = `تو یک کارشناس ارشد و بسیار دقیق غربالگری رزومه در هلدینگ تولیدی «سیلانه سبز» هستی.
 یک رزومه را موشکافانه با شرایط شغل می‌سنجی.
@@ -779,13 +794,17 @@ ${answersBrief}
 - زیر ${understanding.thresholds.review} = REJECT (رد شود)
 
 نام فایل رزومه: ${fileName}
-متن رزومه:
+${
+  isUsingVision
+    ? `رزومه به‌صورت فایل ضمیمه (PDF یا تصویر اسکن‌شده) همراه این درخواست ارسال شده است. لطفاً تمام لایه‌ها، جداول، متون فارسی و انگلیسی، سوابق و مشخصات آن را مستقیماً از روی فایل با دقت استخراج و تحلیل کن.`
+    : `متن رزومه:
 """
-${normalized.slice(0, 7500)}
-"""
+${normalized.slice(0, 8500)}
+"""`
+}
 
 قوانین نقض‌ناپذیر:
-۱. فقط بر اساس چیزی که واقعاً در متن رزومه آمده قضاوت کن. هرگز نام، عدد، سابقه، مدرک یا مهارتی را حدس نزن یا به نام فایل نسبت نده. اگر اطلاعاتی در رزومه نبود، null بده.
+۱. فقط بر اساس چیزی که واقعاً در محتوای رزومه آمده قضاوت کن. هرگز نام، عدد، سابقه، مدرک یا مهارتی را حدس نزن یا به نام فایل نسبت نده. اگر اطلاعاتی در رزومه نبود، null بده.
 ۲. candidateName فقط اگر نام صریح در رزومه آمده پر شود؛ در غیر این صورت null.
 ۳. برای هر شاخص در criterionScores: امتیاز ۰ تا ۱۰۰، rationale یک جمله فارسی، و evidence یک «نقل‌قول مستقیم کوتاه واقعی» از متن رزومه. اگر شاخصی هیچ شاهدی در رزومه نداشت، امتیاز پایین و evidence صریحاً بنویس «در رزومه به این مورد اشاره نشده».
 ۴. نقاط قوت strengths حداکثر ۴، نقاط ضعف weaknesses حداکثر ۴؛ همه با evidence واقعی. severity: مواردی که شروط حذفی تیک‌خورده یا شاخص‌های الزامی را نقض می‌کنند «knockout»، نقص‌های مهم «major»، موارد جزئی «minor».
@@ -825,7 +844,21 @@ ${normalized.slice(0, 7500)}
 }`;
 
   try {
-    const raw = await generateWithFallback(prompt, { temperature: 0.1, timeoutMs: 25_000 });
+    const contents = isUsingVision && fileBase64 && fileMimeType
+      ? {
+          parts: [
+            {
+              inlineData: {
+                mimeType: fileMimeType,
+                data: fileBase64,
+              },
+            },
+            { text: prompt },
+          ],
+        }
+      : prompt;
+
+    const raw = await generateWithFallback(contents, { temperature: 0.1, timeoutMs: 30_000 });
     const parsed = cleanAndParseJson<any>(raw, null);
     if (!parsed) throw new Error('malformed evaluation');
     return finalizeEvaluation(parsed, understanding, answers, 'ai');
@@ -833,7 +866,7 @@ ${normalized.slice(0, 7500)}
     if (err?.message !== 'GEMINI_CIRCUIT_OPEN') {
       console.log(`[evaluateResumeV2] «${fileName}» → local engine (${err?.message || 'err'})`);
     }
-    return evaluateResumeLocal(normalized, understanding, answers, fileName);
+    return evaluateResumeLocal(normalized || fileName, understanding, answers, fileName);
   }
 }
 

@@ -40,42 +40,148 @@ export async function runScreeningBatch(
   const items: ResumeFileItem[] = input.files.map((f) => ({ ...f, status: 'queued' }));
   const total = items.length;
   let processed = 0;
+  let extractedCount = 0;
   let aiCount = 0;
   let localCount = 0;
+  let currentPhase: 'extracting' | 'evaluating' | 'calibrating' | 'done' = 'extracting';
+  const activeEvaluating = new Set<string>();
 
-  const emit = (statusText: string, current?: string) =>
+  const startTime = Date.now();
+  let activeTick = 0;
+
+  const computeOverallPercent = (): number => {
+    if (currentPhase === 'done') return 100;
+    if (total <= 0) return 0;
+
+    if (currentPhase === 'extracting') {
+      const extRatio = Math.min(1, extractedCount / total);
+      return Math.min(15, Math.max(3, Math.round(extRatio * 15)));
+    }
+
+    if (currentPhase === 'evaluating') {
+      const completedRatio = processed / total;
+      const completedPart = completedRatio * 75;
+      const activeCount = activeEvaluating.size;
+      const itemWeight = 75 / total;
+      // In-flight active progression up to 85% of that item's slot
+      const inFlightRatio = Math.min(0.85, (activeTick % 10) * 0.09 + 0.1);
+      const activeBonus = activeCount > 0 ? inFlightRatio * itemWeight : 0;
+
+      const evalPct = 15 + completedPart + activeBonus;
+      return Math.min(90, Math.max(16, Math.round(evalPct)));
+    }
+
+    if (currentPhase === 'calibrating') {
+      return 95;
+    }
+
+    return 0;
+  };
+
+  const emit = (statusText: string, current?: string, subStatusText?: string) => {
+    let speedPerMinute: number | undefined;
+    let estimatedSecondsRemaining: number | undefined;
+
+    const EVAL_CONCURRENCY = Math.min(4, Math.max(1, total));
+
+    if (currentPhase === 'done') {
+      estimatedSecondsRemaining = 0;
+    } else if (currentPhase === 'calibrating') {
+      estimatedSecondsRemaining = 1;
+    } else if (currentPhase === 'extracting') {
+      const remainingExt = Math.max(0, total - extractedCount);
+      estimatedSecondsRemaining = Math.max(2, Math.ceil(remainingExt * 0.2 + (total * 2.5) / EVAL_CONCURRENCY));
+    } else if (currentPhase === 'evaluating') {
+      const remaining = Math.max(0, total - processed);
+      if (processed > 0) {
+        const elapsedSeconds = Math.max(1, (Date.now() - startTime) / 1000);
+        const ratePerSec = processed / elapsedSeconds;
+        speedPerMinute = Math.round(ratePerSec * 60);
+        estimatedSecondsRemaining = Math.max(1, Math.round(remaining / (ratePerSec || 0.35)));
+      } else {
+        const effectiveWorkers = Math.min(EVAL_CONCURRENCY, Math.max(1, remaining));
+        estimatedSecondsRemaining = Math.max(2, Math.ceil((remaining * 2.8) / effectiveWorkers));
+      }
+    }
+
     onProgress({
       items: [...items],
       processedCount: processed,
       totalCount: total,
       statusText,
+      subStatusText,
       currentEvaluatingName: current,
+      activeEvaluatingNames: Array.from(activeEvaluating),
+      phase: currentPhase,
+      extractedCount,
+      estimatedSecondsRemaining,
+      speedPerMinute,
+      overallPercent: computeOverallPercent(),
     });
+  };
 
-  // ---- Step A: extract text for every file ----
-  for (let i = 0; i < items.length; i++) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    const item = items[i];
-    item.status = 'extracting';
-    emit(`در حال خواندن «${item.name}»… (${i + 1} از ${total})`, item.name);
-    if (item.file) {
-      const extraction = await extractResumeContent(item.file, item.name);
-      if (!extraction.success) {
-        item.status = 'unjudgeable';
-        item.unjudgeableReason = extraction.unjudgeableReason || 'امکان استخراج متن وجود ندارد';
-      } else {
+  // ---- Step A: Concurrent text extraction (6 parallel workers) ----
+  currentPhase = 'extracting';
+  emit(`در حال بازخوانی و استخراج محتوای ${total} فایل…`);
+
+  const EXTRACT_CONCURRENCY = Math.min(6, items.length);
+  let extractNext = 0;
+
+  async function extractWorker() {
+    while (extractNext < items.length) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      const idx = extractNext++;
+      const item = items[idx];
+      item.status = 'extracting';
+      emit(`در حال استخراج محتوا: ${item.name} (${extractedCount + 1} از ${total})`, item.name);
+
+      if (item.file) {
+        const extraction = await extractResumeContent(item.file, item.name);
         item.extractedText = extraction.text;
+
+        if (extraction.isVisualDocument) {
+          // Visual document (image or scanned PDF) - queue for Gemini native vision processing
+          item.status = 'queued';
+        } else if (!extraction.success) {
+          item.status = 'unjudgeable';
+          item.unjudgeableReason = extraction.unjudgeableReason || 'امکان استخراج محتوا وجود ندارد';
+        } else {
+          item.status = 'queued';
+        }
+      } else {
         item.status = 'queued';
       }
+
+      extractedCount++;
+      emit(`استخراج محتوا: ${extractedCount} از ${total} رزومه پایان یافت…`, item.name);
     }
   }
-  emit('استخراج متن پایان یافت؛ آغاز تحلیل هوشمند…');
 
-  // ---- Step B: AI evaluation with a 2-worker pool ----
-  const CONCURRENCY = 2;
+  await Promise.all(Array.from({ length: EXTRACT_CONCURRENCY }, () => extractWorker()));
+  emit('استخراج محتوا با موفقیت به پایان رسید؛ آغاز تحلیل هوشمند…');
+
+  // ---- Step B: AI evaluation with 4 parallel workers ----
+  currentPhase = 'evaluating';
+  const EVAL_CONCURRENCY = Math.min(4, Math.max(1, items.length));
   let next = 0;
 
-  async function worker() {
+  const microSteps = [
+    'در حال بررسی ساختار و بازخوانی سوابق…',
+    'سنجش مهارت‌های تخصصی و شرایط احراز…',
+    'انطباق با چک‌باکس‌ها و سوالات مصوب…',
+    'محاسبه امتیاز شایستگی و رتبه‌بندی نهایی…',
+  ];
+
+  const heartbeat = setInterval(() => {
+    if (activeEvaluating.size > 0 && currentPhase === 'evaluating') {
+      activeTick++;
+      const currentName = Array.from(activeEvaluating)[0];
+      const stepText = microSteps[activeTick % microSteps.length];
+      emit(`در حال تحلیل هوشمند «${currentName}»…`, currentName, stepText);
+    }
+  }, 400);
+
+  async function evalWorker() {
     while (next < items.length) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const idx = next++;
@@ -101,12 +207,14 @@ export async function runScreeningBatch(
           }
         }
         processed++;
-        emit(`بررسی ${processed} از ${total} تمام شد…`, item.name);
+        emit(`بررسی ${processed} از ${total} انجام شد…`);
         continue;
       }
 
       item.status = 'evaluating';
-      emit(`در حال تحلیل «${item.name}»…`, item.name);
+      activeEvaluating.add(item.name);
+      emit(`در حال تحلیل هوشمند «${item.name}»…`, item.name, microSteps[0]);
+
       try {
         const base64 = item.file ? await fileToBase64(item.file) : undefined;
         const { record } = await evaluateResume({
@@ -116,17 +224,20 @@ export async function runScreeningBatch(
           unjudgeableReason: null,
           fileBase64: base64,
         });
+
         item.recordId = record.id;
         item.category = record.category;
         item.score = record.score;
         if (record.engine === 'local') localCount++;
         else if (record.category !== 'UNJUDGEABLE') aiCount++;
+
         item.status =
           record.category === 'UNJUDGEABLE'
             ? 'unjudgeable'
             : record.category === 'ERROR'
             ? 'error'
             : 'success';
+
         if (record.category === 'UNJUDGEABLE') {
           item.unjudgeableReason = record.unjudgeableReason || 'اطلاعات رزومه برای قضاوت کافی نیست';
         }
@@ -135,20 +246,29 @@ export async function runScreeningBatch(
         item.status = 'error';
         item.errorMessage = err?.message || 'خطا در تحلیل';
       } finally {
+        activeEvaluating.delete(item.name);
         processed++;
-        emit(`بررسی ${processed} از ${total} تمام شد…`, item.name);
+        emit(`تحلیل هوشمند ${processed} از ${total} تمام شد…`, item.name);
       }
     }
   }
 
-  const workers = Array.from({ length: Math.min(CONCURRENCY, items.length) }, () => worker());
-  await Promise.all(workers);
+  const evalWorkers = Array.from({ length: EVAL_CONCURRENCY }, () => evalWorker());
+  try {
+    await Promise.all(evalWorkers);
+  } finally {
+    clearInterval(heartbeat);
+  }
 
-  // ---- Step C: relative calibration ----
-  if (!signal?.aborted) {
-    emit('در حال کالیبراسیون نهایی و چیدمان اولویت‌ها…');
+  // ---- Step C: relative calibration (only needed if > 1 candidate) ----
+  if (!signal?.aborted && items.length > 1) {
+    currentPhase = 'calibrating';
+    emit('در حال کالیبراسیون نهایی و رتبه‌بندی عادلانه داوطلبان…');
     await calibrateBatch(batch.id).catch((e) => console.warn('calibration skipped', e));
   }
+
+  currentPhase = 'done';
+  emit('فرآیند تحلیل و غربالگری با موفقیت کامل شد.');
 
   return { batchId: batch.id, aiCount, localCount };
 }

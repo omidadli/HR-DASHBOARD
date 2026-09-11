@@ -13,14 +13,18 @@ interface UploadZoneProps {
 export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disabled }) => {
   const [dragging, setDragging] = useState(false);
   const [unpacking, setUnpacking] = useState(false);
+  const [unpackProgress, setUnpackProgress] = useState<{ current: number; total: number; name: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const addFiles = async (list: FileList | File[]) => {
     const raw = Array.from(list);
     if (!raw.length) return;
     setUnpacking(true);
+    setUnpackProgress(null);
     try {
-      const unpacked = await processUploadFiles(raw);
+      const unpacked = await processUploadFiles(raw, (current, total, name) => {
+        setUnpackProgress({ current, total, name });
+      });
       setFiles((prev) => {
         const keys = new Set(prev.map((f) => `${f.name}_${f.size}`));
         const added: ResumeFileItem[] = [];
@@ -41,6 +45,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
       });
     } finally {
       setUnpacking(false);
+      setUnpackProgress(null);
     }
   };
 
@@ -73,7 +78,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.docx,.zip,.txt,.rtf,.md"
+          accept=".pdf,.docx,.doc,.zip,.txt,.rtf,.md,.jpg,.jpeg,.png,.webp"
           onChange={onPick}
           className="hidden"
           disabled={disabled}
@@ -85,14 +90,30 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
           رزومه‌ها را اینجا رها کنید یا برای انتخاب کلیک کنید
         </div>
         <div className="text-xs text-text-3">
-          کشیدن و رها کردن یا کلیک برای انتخاب — PDF، Word، ZIP و TXT — بدون سقف تعداد
+          کشیدن و رها کردن یا کلیک برای انتخاب — PDF (متنی/اسکن‌شده)، Word، تصاویر رزومه، TXT، و فایل فشرده ZIP (حتی بیش از ۲۰۰ رزومه)
         </div>
       </div>
 
       {unpacking && (
-        <div className="p-2.5 rounded-control bg-info-soft border border-info/30 text-info text-xs font-bold text-center flex items-center justify-center gap-2">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          در حال بازگشایی فایل فشرده…
+        <div className="p-3 rounded-control bg-info-soft border border-info/30 text-info text-xs font-bold flex flex-col gap-1.5 shadow-xs">
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-info shrink-0" />
+              {unpackProgress
+                ? `در حال بازگشایی و استخراج رزومه‌ها (${toPersianDigits(unpackProgress.current)} از ${toPersianDigits(unpackProgress.total)})…`
+                : 'در حال خواندن فایل فشرده…'}
+            </span>
+            {unpackProgress && (
+              <span className="tabular-nums">
+                {toPersianDigits(Math.round((unpackProgress.current / unpackProgress.total) * 100))}٪
+              </span>
+            )}
+          </div>
+          {unpackProgress && (
+            <div className="text-text-3 font-normal truncate max-w-full text-start">
+              در حال استخراج: «{unpackProgress.name}»
+            </div>
+          )}
         </div>
       )}
 
@@ -117,10 +138,10 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
             {files.map((f, i) => (
               <div
                 key={f.id}
-                className="flex items-center justify-between gap-2 p-2 rounded-xl bg-surface-2/60 border border-border-default/70 text-[11px]"
+                className="flex items-center justify-between gap-2 p-2 rounded-control bg-surface-2/60 border border-border-default/70 text-xs"
               >
                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <span className="font-mono text-text-3 shrink-0">{toPersianDigits(i + 1)}.</span>
+                  <span className="tabular-nums text-text-3 shrink-0">{toPersianDigits(i + 1)}.</span>
                   <FileText className="w-3.5 h-3.5 text-brand shrink-0" />
                   <span className="font-bold text-text-1 truncate" title={f.name}>
                     {f.name}
@@ -131,7 +152,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
                   <button
                     type="button"
                     onClick={() => setFiles((prev) => prev.filter((x) => x.id !== f.id))}
-                    className="w-6 h-6 rounded-lg flex items-center justify-center text-text-3 hover:text-danger hover:bg-danger-soft cursor-pointer shrink-0"
+                    className="w-7 h-7 rounded-control flex items-center justify-center text-text-3 hover:text-danger hover:bg-danger-soft cursor-pointer shrink-0"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>

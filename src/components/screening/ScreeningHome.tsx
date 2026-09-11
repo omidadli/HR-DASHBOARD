@@ -60,13 +60,15 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
         throw new Error('قالب پرسش‌نامه دریافتی نامعتبر است');
       }
       setUnderstanding(u);
-      setAnswers((prev) => {
-        const next = { ...prev };
+      setAnswers(() => {
+        const next: ScreeningAnswers = {};
         for (const q of u.questions) {
-          if (next[q.id] === undefined) {
-            if (q.type === 'boolean') next[q.id] = q.defaultChecked;
-            else if (q.type === 'single') next[q.id] = q.defaultValue;
-            else next[q.id] = [...(q.defaultValues || [])];
+          if (q.type === 'boolean') {
+            next[q.id] = Boolean(q.defaultChecked);
+          } else if (q.type === 'single') {
+            next[q.id] = String(q.defaultValue ?? q.options?.[0]?.value ?? 'any');
+          } else if (q.type === 'multi') {
+            next[q.id] = Array.isArray(q.defaultValues) ? [...q.defaultValues] : [];
           }
         }
         return next;
@@ -83,6 +85,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
   const selectDepartment = (id: string) => {
     setDepartmentId(id);
     setUnderstanding(null);
+    setAnswers({});
     loadQuestions(id, roleTitle, extraNotes);
   };
 
@@ -116,23 +119,23 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
   };
 
   return (
-    <div className="w-full max-w-3xl mx-auto px-4 py-6 sm:py-8 flex flex-col gap-6">
+    <div className="w-full max-w-[720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-6">
       {/* Heading */}
       <div className="text-center flex flex-col items-center gap-2">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-soft text-brand text-[11px] font-black border border-brand/20">
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-soft text-brand text-xs font-bold border border-brand/20">
           <Sparkles className="w-3.5 h-3.5" />
           دستیار هوشمند جذب نیرو
         </div>
-        <h1 className="text-2xl sm:text-3xl font-black text-text-1 tracking-tight">
-          برای کدوم دپارتمان نیرو می‌خوای؟
+        <h1 className="text-2xl sm:text-3xl font-bold text-text-1">
+          برای کدام دپارتمان نیرو می‌خواهید؟
         </h1>
         <p className="text-xs sm:text-sm text-text-3 max-w-md leading-relaxed">
-          اول دپارتمان رو انتخاب کن، چند تا تیک ساده بزن و رزومه‌ها رو بریز؛ بقیه‌اش با هوش مصنوعی.
+          ابتدا دپارتمان را انتخاب کنید، چند اولویت ساده را مشخص نموده و رزومه‌ها را اضافه کنید؛ تحلیل با هوش مصنوعی.
         </p>
       </div>
 
       {healthError && (
-        <div className="p-3.5 rounded-xl bg-danger-soft border border-danger/30 text-danger text-xs font-bold flex items-center gap-2.5">
+        <div className="p-3.5 rounded-control bg-danger-soft border border-danger/30 text-danger text-xs font-bold flex items-center gap-2.5">
           <AlertCircle className="w-5 h-5 shrink-0" />
           <span>{healthError}</span>
         </div>
@@ -141,12 +144,12 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
       {/* Step 1: Department */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
-          <span className="w-6 h-6 rounded-lg bg-brand text-white text-[11px] font-black flex items-center justify-center">
+          <span className="w-6 h-6 rounded-control bg-brand text-white text-xs font-bold flex items-center justify-center">
             ۱
           </span>
-          <h2 className="text-sm font-black text-text-1">دپارتمان رو انتخاب کن</h2>
+          <h2 className="text-sm font-bold text-text-1">دپارتمان را انتخاب کنید</h2>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
           {DEPARTMENTS.map((d) => {
             const Icon = d.icon;
             const active = d.id === departmentId;
@@ -162,7 +165,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
                 }`}
               >
                 <span
-                  className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 transition-colors ${
+                  className={`w-8 h-8 rounded-control border flex items-center justify-center shrink-0 transition-colors ${
                     active
                       ? 'bg-brand border-brand text-white'
                       : 'bg-surface-2 border-border-default text-text-2'
@@ -183,10 +186,10 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
       {departmentId && (
         <section className="flex flex-col gap-3 animate-fadeIn">
           <div className="flex items-center gap-2">
-            <span className="w-6 h-6 rounded-lg bg-brand text-white text-[11px] font-black flex items-center justify-center">
+            <span className="w-6 h-6 rounded-control bg-brand text-white text-xs font-bold flex items-center justify-center">
               ۲
             </span>
-            <h2 className="text-sm font-black text-text-1">شغل و اولویت‌ها</h2>
+            <h2 className="text-sm font-bold text-text-1">شغل و اولویت‌ها</h2>
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -199,7 +202,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
               value={roleTitle}
               onChange={(e) => onTitleChange(e.target.value)}
               placeholder="مثلاً: کارشناس فروش حضوری"
-              className="w-full p-3 rounded-xl bg-surface-1 border border-border-default focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none text-sm placeholder:text-text-3"
+              className="w-full p-3 rounded-control bg-surface-1 border border-border-default focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none text-xs placeholder:text-text-3"
             />
           </div>
 
@@ -215,18 +218,18 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
           <button
             type="button"
             onClick={() => setShowNotes((s) => !s)}
-            className="self-start inline-flex items-center gap-1 text-[11px] font-bold text-text-3 hover:text-brand cursor-pointer"
+            className="self-start inline-flex items-center gap-1 text-xs font-bold text-text-3 hover:text-brand cursor-pointer"
           >
             <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showNotes ? 'rotate-180' : ''}`} />
-            توضیح بیشتری داری؟ (اختیاری)
+            توضیح بیشتری دارید؟ (اختیاری)
           </button>
           {showNotes && (
             <textarea
               value={extraNotes}
               onChange={(e) => setExtraNotes(e.target.value)}
               rows={3}
-              placeholder="هر نکته‌ای که دوست داری هوش مصنوعی بداند…"
-              className="w-full p-3 rounded-xl bg-surface-1 border border-border-default focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none text-xs resize-y placeholder:text-text-3"
+              placeholder="هر نکته‌ای که می‌خواهید هوش مصنوعی بداند…"
+              className="w-full p-3 rounded-control bg-surface-1 border border-border-default focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none text-xs resize-y placeholder:text-text-3"
             />
           )}
 
@@ -264,7 +267,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
             disabled={!canStart}
             className={`w-full sm:w-auto sm:min-w-[300px] py-3 px-8 rounded-control text-sm font-bold flex items-center justify-center gap-2 transition-all ${
               canStart
-                ? 'bg-brand hover:bg-brand-hover text-white cursor-pointer shadow-e1 ring-2 ring-brand/15 active:scale-[0.99]'
+                ? 'bg-brand btn-neon-glass text-white cursor-pointer shadow-neon active:scale-[0.99]'
                 : 'bg-surface-2 text-text-3 border border-border-default cursor-not-allowed'
             }`}
           >
