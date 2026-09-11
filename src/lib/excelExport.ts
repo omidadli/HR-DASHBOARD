@@ -1,110 +1,62 @@
-import * as XLSX from 'xlsx';
-import { JobUnderstanding, ResumeFileItem } from '../types/screening';
+import { ResumeRecord, ScreeningBatch } from '../types/screening';
 import { toPersianDigits } from './normalizeFa';
 
-export function exportScreeningToExcel(
-  jobUnderstanding: JobUnderstanding,
-  items: ResumeFileItem[],
-  jobDescription: string
-) {
+const CAT_LABEL: Record<string, string> = {
+  INTERVIEW: 'مصاحبه شود',
+  REVIEW: 'بررسی شود',
+  REJECT: 'رد شود',
+  UNJUDGEABLE: 'غیرقابل ارزیابی',
+  ERROR: 'خطا در تحلیل',
+};
+
+export async function exportBatchToExcel(batch: ScreeningBatch, records: ResumeRecord[]) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
-  // Valid candidates sorted by score descending
-  const validEvaluated = items
-    .filter((it) => it.status === 'success' && it.result && !it.result.insufficientInfo && !it.result.irrelevant)
-    .sort((a, b) => (b.result?.score || 0) - (a.result?.score || 0));
-
-  // Count metrics
-  const interviewCount = validEvaluated.filter((it) => it.result?.recommendation === 'INTERVIEW').length;
-  const reviewCount = validEvaluated.filter((it) => it.result?.recommendation === 'REVIEW').length;
-  const rejectCount = validEvaluated.filter((it) => it.result?.recommendation === 'REJECT').length;
-  const unjudgeableCount = items.length - validEvaluated.length;
-
-  // --- SHEET 1: خلاصه شغل (Job Summary) ---
-  const sheet1Data: Array<Record<string, string | number>> = [
-    { 'عنوان': 'دپارتمان تشخیص‌داده‌شده', 'مقدار': jobUnderstanding.department },
-    { 'عنوان': 'سطح ارشدیت شغل', 'مقدار': jobUnderstanding.seniority },
-    { 'عنوان': 'توضیح هوش مصنوعی از شغل', 'مقدار': jobUnderstanding.plainExplanation },
-    { 'عنوان': 'آستانه قبولی مصاحبه', 'مقدار': `حداقل نمره ${jobUnderstanding.thresholds.interview}` },
-    { 'عنوان': 'آستانه بررسی بیشتر', 'مقدار': `نمره بین ${jobUnderstanding.thresholds.review} تا ${jobUnderstanding.thresholds.interview}` },
-    { 'عنوان': 'کل رزومه‌های بارگذاری‌شده', 'مقدار': items.length },
-    { 'عنوان': 'پیشنهاد مصاحبه (سبز)', 'مقدار': interviewCount },
-    { 'عنوان': 'نیاز به بررسی بیشتر (زرد)', 'مقدار': reviewCount },
-    { 'عنوان': 'رد صلاحیت اولیه (قرمز)', 'مقدار': rejectCount },
-    { 'عنوان': 'غیرقابل قضاوت / اسکن‌شده / نامرتبط', 'مقدار': unjudgeableCount },
-    { 'عنوان': 'متن اولیه ثبت‌شده شغل', 'مقدار': jobDescription.slice(0, 500) },
+  const summaryRows = [
+    { مورد: 'دپارتمان', مقدار: batch.departmentName },
+    { مورد: 'عنوان شغلی', مقدار: batch.roleTitle || '—' },
+    { مورد: 'تاریخ غربالگری', مقدار: batch.createdAtJalali },
+    { مورد: 'نگاه هوش مصنوعی به شغل', مقدار: batch.understanding.plainExplanation },
+    { مورد: 'آستانه مصاحبه', مقدار: toPersianDigits(batch.understanding.thresholds.interview) },
+    { مورد: 'آستانه بررسی', مقدار: toPersianDigits(batch.understanding.thresholds.review) },
+    { مورد: 'کل رزومه‌ها', مقدار: toPersianDigits(batch.stats.total) },
+    { مورد: 'مصاحبه شود', مقدار: toPersianDigits(batch.stats.interview) },
+    { مورد: 'بررسی شود', مقدار: toPersianDigits(batch.stats.review) },
+    { مورد: 'رد شود', مقدار: toPersianDigits(batch.stats.reject) },
+    { مورد: 'غیرقابل ارزیابی', مقدار: toPersianDigits(batch.stats.unjudgeable) },
   ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'خلاصه');
 
-  const ws1 = XLSX.utils.json_to_sheet(sheet1Data);
-  // Set RTL direction for Persian
-  if (!ws1['!views']) ws1['!views'] = [];
-  ws1['!views'].push({ rightToLeft: true });
-  ws1['!cols'] = [{ wch: 30 }, { wch: 70 }];
+  const rows = records
+    .filter((r) => !r.deleted)
+    .sort((a, b) => {
+      const order = { INTERVIEW: 0, REVIEW: 1, REJECT: 2, UNJUDGEABLE: 3, ERROR: 4 } as const;
+      if (order[a.category] !== order[b.category]) return order[a.category] - order[b.category];
+      return b.score - a.score;
+    })
+    .map((r) => ({
+      'دسته': CAT_LABEL[r.category] || r.category,
+      'رتبه در دسته': r.rankInCategory != null ? toPersianDigits(r.rankInCategory) : '—',
+      'نام': r.candidateName || '—',
+      'امتیاز': toPersianDigits(r.score),
+      'آخرین سمت': r.facts?.lastRole || '—',
+      'سال سابقه': r.facts?.yearsExperience != null ? toPersianDigits(r.facts.yearsExperience) : '—',
+      'تحصیلات': r.facts?.education || '—',
+      'شهر': r.contact?.city || '—',
+      'تلفن': r.contact?.phone || '—',
+      'ایمیل': r.contact?.email || '—',
+      'برچسب‌ها': r.tags.join('، '),
+      'خلاصه تحلیل': r.summary,
+      'چرا این دسته': r.whyCategory,
+      'نقاط قوت': r.strengths.map((s) => s.point).join('؛ '),
+      'کمبودها': r.weaknesses.map((w) => w.point).join('؛ '),
+      'در بانک رزومه': r.inBank ? 'بله' : 'خیر',
+      'فایل': r.fileName,
+      'موتور تحلیل': r.engine === 'local' ? 'محلی (غیر هوشمند)' : r.engine === 'ai' ? 'هوش مصنوعی' : '—',
+    }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'نتایج کامل');
 
-  XLSX.utils.book_append_sheet(wb, ws1, 'خلاصه شغل');
-
-  // --- SHEET 2: رتبه‌بندی (Candidate Rankings) ---
-  const sheet2Data: Array<Record<string, string | number>> = [];
-
-  let rank = 1;
-  // First add evaluated candidates
-  for (const it of validEvaluated) {
-    const res = it.result!;
-    const recFa =
-      res.recommendation === 'INTERVIEW'
-        ? 'مصاحبه شود ✅'
-        : res.recommendation === 'REVIEW'
-        ? 'بررسی بیشتر 🟡'
-        : 'رد شود 🔴';
-
-    const strengthsText = res.strengths.map((s, idx) => `${idx + 1}) ${s.point} [شاهد: ${s.evidence}]`).join('\n');
-    const weaknessesText = res.weaknesses.map((w, idx) => `${idx + 1}) ${w.point} [دلیل: ${w.evidence}]`).join('\n');
-
-    sheet2Data.push({
-      'رتبه': rank++,
-      'نام کاندید': res.candidateName || `کاندید ${rank - 1}`,
-      'نام فایل رزومه': it.name,
-      'امتیاز (از ۱۰۰)': res.score,
-      'توصیه نهایی': recFa,
-      'خلاصه ارزیابی': res.summary,
-      'نقاط قوت و شواهد متنی': strengthsText,
-      'کمبودها و دلایل': weaknessesText,
-    });
-  }
-
-  // Then append unjudgeable/corrupt items with honest status
-  const unjudgeables = items.filter((it) => it.status !== 'success' || !it.result || it.result.insufficientInfo || it.result.irrelevant);
-  for (const it of unjudgeables) {
-    sheet2Data.push({
-      'رتبه': '—',
-      'نام کاندید': it.result?.candidateName || it.name,
-      'نام فایل رزومه': it.name,
-      'امتیاز (از ۱۰۰)': 'قابل قضاوت نیست',
-      'توصیه نهایی': 'بررسی دستی / غیرقابل قضاوت 🤷',
-      'خلاصه ارزیابی': it.unjudgeableReason || it.errorMessage || 'فایل نامعتبر، اسکن‌شده، یا نامرتبط',
-      'نقاط قوت و شواهد متنی': '—',
-      'کمبودها و دلایل': '—',
-    });
-  }
-
-  const ws2 = XLSX.utils.json_to_sheet(sheet2Data);
-  if (!ws2['!views']) ws2['!views'] = [];
-  ws2['!views'].push({ rightToLeft: true });
-  ws2['!cols'] = [
-    { wch: 8 },  // رتبه
-    { wch: 22 }, // نام
-    { wch: 25 }, // فایل
-    { wch: 15 }, // امتیاز
-    { wch: 20 }, // توصیه
-    { wch: 45 }, // خلاصه
-    { wch: 50 }, // قوت
-    { wch: 50 }, // کمبود
-  ];
-
-  XLSX.utils.book_append_sheet(wb, ws2, 'رتبه‌بندی');
-
-  // Trigger download in browser
-  const todayStr = new Date().toISOString().split('T')[0];
-  const fileName = `گزارش_غربالگری_رزومه_${todayStr}.xlsx`;
-  XLSX.writeFile(wb, fileName);
+  const safeName = (batch.roleTitle || batch.departmentName).replace(/[\\/:*?"<>|]/g, '').slice(0, 40);
+  XLSX.writeFile(wb, `غربالگری-${safeName}-${batch.createdAtJalali.replace(/\//g, '-')}.xlsx`);
 }
