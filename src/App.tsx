@@ -12,6 +12,7 @@ import { Toaster, toast } from './components/common/Toast';
 import { ScreeningHome } from './components/screening/ScreeningHome';
 import { ProcessingView } from './components/screening/ProcessingView';
 import { ResultsView } from './components/screening/ResultsView';
+import { StepperHeader } from './components/screening/StepperHeader';
 import { BankHome } from './components/bank/BankHome';
 import { DepartmentBankView } from './components/bank/DepartmentBankView';
 
@@ -126,25 +127,23 @@ export function App() {
       {/* Top header with the only two tabs */}
       <header className="sticky top-0 z-40 bg-surface-1/95 backdrop-blur border-b border-border-default no-print">
         <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="w-9 h-9 rounded-xl bg-brand-soft border border-brand/20 flex items-center justify-center shrink-0 p-1">
-              <SilanehLogo className="w-full h-full object-contain" />
-            </span>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <SilanehLogo className="w-8 h-8" />
             <div className="leading-tight min-w-0">
-              <div className="text-xs sm:text-sm font-black text-text-1 truncate">سیلانه سبز</div>
-              <div className="text-[10px] text-text-3 truncate">دستیار هوشمند غربالگری رزومه</div>
+              <div className="text-xs sm:text-sm font-bold text-text-1 truncate">سیلانه سبز</div>
+              <div className="text-xs text-text-3 truncate">دستیار هوشمند غربالگری رزومه</div>
             </div>
           </div>
 
-          <nav className="flex items-center gap-1 bg-surface-2/70 rounded-xl p-1">
+          <nav className="flex items-center gap-1 bg-surface-2 rounded-control p-1">
             <button
               type="button"
               onClick={() => setTab('screening')}
-              className={`inline-flex items-center gap-1.5 px-3 sm:px-4 h-9 rounded-lg text-[11px] sm:text-xs font-black cursor-pointer transition-all ${
-                tab === 'screening' ? 'bg-brand text-white shadow-xs' : 'text-text-2 hover:text-brand'
+              className={`inline-flex items-center gap-1.5 px-3 sm:px-4 h-8 rounded-[8px] text-xs font-bold cursor-pointer transition-all ${
+                tab === 'screening' ? 'bg-brand text-white shadow-e1' : 'text-text-2 hover:text-brand'
               }`}
             >
-              <Sparkles className="w-4 h-4" />
+              <Sparkles className="w-3.5 h-3.5" />
               غربالگری جدید
             </button>
             <button
@@ -153,11 +152,11 @@ export function App() {
                 setTab('bank');
                 setBankView({ screen: 'home' });
               }}
-              className={`inline-flex items-center gap-1.5 px-3 sm:px-4 h-9 rounded-lg text-[11px] sm:text-xs font-black cursor-pointer transition-all ${
-                tab === 'bank' ? 'bg-brand text-white shadow-xs' : 'text-text-2 hover:text-brand'
+              className={`inline-flex items-center gap-1.5 px-3 sm:px-4 h-8 rounded-[8px] text-xs font-bold cursor-pointer transition-all ${
+                tab === 'bank' ? 'bg-brand text-white shadow-e1' : 'text-text-2 hover:text-brand'
               }`}
             >
-              <Library className="w-4 h-4" />
+              <Library className="w-3.5 h-3.5" />
               بانک رزومه
             </button>
           </nav>
@@ -166,13 +165,23 @@ export function App() {
 
       <main className="flex-1 flex flex-col">
         {tab === 'screening' ? (
-          view === 'home' ? (
-            <ScreeningHome key={homeNonce} onStart={start} onOpenBatch={openBatch} />
-          ) : view === 'processing' ? (
-            <ProcessingView progress={progress} error={processingError} onCancel={cancelProcessing} />
-          ) : batchId ? (
-            <ResultsView batchId={batchId} onNewScreening={newScreening} />
-          ) : null
+          <>
+            <StepperHeader
+              currentStep={view}
+              onStepClick={(step) => {
+                if (step === 'home' && view === 'results') {
+                  newScreening();
+                }
+              }}
+            />
+            {view === 'home' ? (
+              <ScreeningHome key={homeNonce} onStart={start} onOpenBatch={openBatch} />
+            ) : view === 'processing' ? (
+              <ProcessingView progress={progress} error={processingError} onCancel={cancelProcessing} />
+            ) : batchId ? (
+              <ResultsView batchId={batchId} onNewScreening={newScreening} />
+            ) : null}
+          </>
         ) : bankView.screen === 'home' ? (
           <BankHome
             onOpenDepartment={(id) => setBankView({ screen: 'department', id })}

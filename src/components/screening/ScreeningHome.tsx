@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, Briefcase, ChevronDown, AlertCircle, Play } from 'lucide-react';
+import { Sparkles, Briefcase, ChevronDown, AlertCircle, Play, Bot } from 'lucide-react';
 import { DEPARTMENTS } from '../../lib/departments';
 import {
   JobUnderstanding,
@@ -155,18 +155,22 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
                 key={d.id}
                 type="button"
                 onClick={() => selectDepartment(d.id)}
-                className={`flex items-center gap-2 p-2.5 sm:p-3 rounded-xl border text-right transition-all cursor-pointer min-h-[52px] ${
+                className={`flex items-center gap-2.5 p-2.5 sm:p-3 rounded-control border text-right transition-all cursor-pointer min-h-[52px] ${
                   active
-                    ? 'border-brand bg-brand-soft/70 ring-2 ring-brand/15'
+                    ? 'border-brand bg-brand-soft/70 ring-2 ring-brand/15 shadow-e1'
                     : 'border-border-default bg-surface-1 hover:border-brand/40'
                 }`}
               >
                 <span
-                  className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 ${d.accent}`}
+                  className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 transition-colors ${
+                    active
+                      ? 'bg-brand border-brand text-white'
+                      : 'bg-surface-2 border-border-default text-text-2'
+                  }`}
                 >
                   <Icon className="w-4 h-4" />
                 </span>
-                <span className={`text-[11px] sm:text-xs font-black leading-tight ${active ? 'text-brand' : 'text-text-1'}`}>
+                <span className={`text-xs font-bold leading-tight ${active ? 'text-brand' : 'text-text-1'}`}>
                   {d.name}
                 </span>
               </button>
@@ -227,9 +231,12 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
           )}
 
           {understanding && (
-            <div className="p-3 rounded-xl bg-brand-soft/50 border border-brand/20 text-[11px] text-text-2 leading-relaxed">
-              <span className="font-black text-brand">🤖 نگاه هوش مصنوعی به این شغل: </span>
-              {understanding.plainExplanation}
+            <div className="p-3.5 rounded-control bg-brand-soft border border-brand/20 text-xs text-text-2 leading-relaxed flex items-start gap-2">
+              <Bot className="w-4 h-4 text-brand shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-brand">تحلیل هوش مصنوعی از این موقعیت شغلی: </span>
+                <span>{understanding.plainExplanation}</span>
+              </div>
             </div>
           )}
         </section>
@@ -239,10 +246,10 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
       {departmentId && (
         <section className="flex flex-col gap-3 animate-fadeIn">
           <div className="flex items-center gap-2">
-            <span className="w-6 h-6 rounded-lg bg-brand text-white text-[11px] font-black flex items-center justify-center">
+            <span className="w-6 h-6 rounded-control bg-brand text-white text-xs font-bold flex items-center justify-center">
               ۳
             </span>
-            <h2 className="text-sm font-black text-text-1">رزومه‌ها رو بریز</h2>
+            <h2 className="text-sm font-bold text-text-1">رزومه‌ها را اضافه کنید</h2>
           </div>
           <UploadZone files={files} setFiles={setFiles} />
         </section>
@@ -255,26 +262,26 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
             type="button"
             onClick={start}
             disabled={!canStart}
-            className={`w-full sm:w-auto sm:min-w-[300px] py-3.5 px-8 rounded-2xl text-base font-black flex items-center justify-center gap-2 transition-all ${
+            className={`w-full sm:w-auto sm:min-w-[300px] py-3 px-8 rounded-control text-sm font-bold flex items-center justify-center gap-2 transition-all ${
               canStart
-                ? 'bg-brand hover:bg-brand-hover text-white cursor-pointer shadow-md ring-4 ring-brand/15 active:scale-[0.99]'
+                ? 'bg-brand hover:bg-brand-hover text-white cursor-pointer shadow-e1 ring-2 ring-brand/15 active:scale-[0.99]'
                 : 'bg-surface-2 text-text-3 border border-border-default cursor-not-allowed'
             }`}
           >
-            <Play className="w-5 h-5" />
+            <Play className="w-4 h-4" />
             شروع تحلیل هوشمند
             {files.length > 0 && (
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
+              <span className="text-xs px-2 py-0.5 rounded-full bg-white/20 font-sans font-bold">
                 {toPersianDigits(files.length)} رزومه
               </span>
             )}
           </button>
           {!canStart && (
-            <span className="text-[11px] text-text-3 font-bold">
+            <span className="text-xs text-text-3 font-medium">
               {!files.length
-                ? 'هنوز رزومه‌ای اضافه نکردی'
+                ? 'هنوز رزومه‌ای اضافه نکردید'
                 : qLoading
-                ? 'چند لحظه صبر کن تا سوال‌ها آماده شن'
+                ? 'چند لحظه صبر کنید تا سوال‌ها آماده شوند'
                 : ''}
             </span>
           )}

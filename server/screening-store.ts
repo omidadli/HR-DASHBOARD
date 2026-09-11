@@ -382,9 +382,29 @@ export function bankDepartmentCounts(): BankDepartmentCount[] {
 export function bankTags(): string[] {
   const set = new Set<string>();
   for (const r of resumes.values()) {
-    if (r.inBank && !r.deleted) r.bankTags.forEach((t) => set.add(t));
+    if (r.inBank && !r.deleted) {
+      r.bankTags.forEach((t) => set.add(t));
+      r.tags.forEach((t) => set.add(t));
+    }
   }
   return Array.from(set).sort();
+}
+
+export function departmentBankBatches(departmentId: string): { id: string; roleTitle: string; createdAtJalali: string }[] {
+  const map = new Map<string, { id: string; roleTitle: string; createdAtJalali: string }>();
+  for (const r of resumes.values()) {
+    if (r.inBank && !r.deleted && r.bankDepartmentId === departmentId && r.batchId) {
+      const b = batches.get(r.batchId);
+      if (b && !map.has(b.id)) {
+        map.set(b.id, {
+          id: b.id,
+          roleTitle: b.roleTitle || b.departmentName,
+          createdAtJalali: b.createdAtJalali,
+        });
+      }
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id));
 }
 
 export function listBankResumes(departmentId: string, filters: BankFilters): PagedResult<ResumeRecord> {
@@ -406,6 +426,7 @@ export function listBankResumes(departmentId: string, filters: BankFilters): Pag
         r.bankTags.join(' '),
         r.facts?.skills.join(' '),
         r.fileName,
+        r.contact?.city,
       ]
         .filter(Boolean)
         .join(' ')
@@ -416,7 +437,16 @@ export function listBankResumes(departmentId: string, filters: BankFilters): Pag
   if (filters.minScore) items = items.filter((r) => r.score >= (filters.minScore || 0));
   if (filters.minYears)
     items = items.filter((r) => (r.facts?.yearsExperience ?? -1) >= (filters.minYears || 0));
-  if (filters.tag) items = items.filter((r) => r.bankTags.includes(filters.tag!) || r.tags.includes(filters.tag!));
+  if (filters.batchId && filters.batchId !== 'all') {
+    items = items.filter((r) => r.batchId === filters.batchId);
+  }
+  if (filters.tags && filters.tags.length > 0) {
+    items = items.filter((r) =>
+      filters.tags!.every((t) => r.bankTags.includes(t) || r.tags.includes(t))
+    );
+  } else if (filters.tag) {
+    items = items.filter((r) => r.bankTags.includes(filters.tag!) || r.tags.includes(filters.tag!));
+  }
   if (filters.since && filters.since !== 'all') {
     const days = filters.since === 'week' ? 7 : 30;
     const cutoff = now - days * 86400_000;
@@ -443,7 +473,16 @@ export function globalBankSearch(query: string, limit = 20): ResumeRecord[] {
   return Array.from(resumes.values())
     .filter((r) => r.inBank && !r.deleted)
     .filter((r) =>
-      [r.candidateName, r.facts?.lastRole, r.tags.join(' '), r.bankTags.join(' '), r.departmentName]
+      [
+        r.candidateName,
+        r.facts?.lastRole,
+        r.facts?.skills.join(' '),
+        r.tags.join(' '),
+        r.bankTags.join(' '),
+        r.bankNote,
+        r.departmentName,
+        r.contact?.city,
+      ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()

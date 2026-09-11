@@ -252,11 +252,19 @@ export interface PagedResult<T> {
   totalPages: number;
 }
 
+export interface BankBatchOption {
+  id: string;
+  roleTitle: string;
+  createdAtJalali: string;
+}
+
 export interface BankFilters {
   query?: string;
   minScore?: number;
   minYears?: number;
   tag?: string;
+  tags?: string[];
+  batchId?: string;
   since?: 'all' | 'week' | 'month';
   sort?: 'newest' | 'score' | 'experience';
   page?: number;

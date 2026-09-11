@@ -57,7 +57,7 @@ export async function runScreeningBatch(
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const item = items[i];
     item.status = 'extracting';
-    emit(`در حال خواندن «${item.name}»… 📖 (${i + 1} از ${total})`, item.name);
+    emit(`در حال خواندن «${item.name}»… (${i + 1} از ${total})`, item.name);
     if (item.file) {
       const extraction = await extractResumeContent(item.file, item.name);
       if (!extraction.success) {
@@ -69,7 +69,7 @@ export async function runScreeningBatch(
       }
     }
   }
-  emit('استخراج متن پایان یافت؛ آغاز تحلیل هوشمند… ⚖️');
+  emit('استخراج متن پایان یافت؛ آغاز تحلیل هوشمند…');
 
   // ---- Step B: AI evaluation with a 2-worker pool ----
   const CONCURRENCY = 2;
@@ -106,7 +106,7 @@ export async function runScreeningBatch(
       }
 
       item.status = 'evaluating';
-      emit(`در حال تحلیل «${item.name}»… ⚖️`, item.name);
+      emit(`در حال تحلیل «${item.name}»…`, item.name);
       try {
         const base64 = item.file ? await fileToBase64(item.file) : undefined;
         const { record } = await evaluateResume({
@@ -136,7 +136,7 @@ export async function runScreeningBatch(
         item.errorMessage = err?.message || 'خطا در تحلیل';
       } finally {
         processed++;
-        emit(`بررسی ${processed} از ${total} تمام شد… 🏆`, item.name);
+        emit(`بررسی ${processed} از ${total} تمام شد…`, item.name);
       }
     }
   }
@@ -146,7 +146,7 @@ export async function runScreeningBatch(
 
   // ---- Step C: relative calibration ----
   if (!signal?.aborted) {
-    emit('در حال کالیبراسیون نهایی و چیدمان اولویت‌ها… 🎯');
+    emit('در حال کالیبراسیون نهایی و چیدمان اولویت‌ها…');
     await calibrateBatch(batch.id).catch((e) => console.warn('calibration skipped', e));
   }
 

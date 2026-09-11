@@ -47,14 +47,14 @@ export function resolveGeminiModel(): string {
   if (envModel) {
     const clean = envModel.replace(/^models\//, '');
     if (
-      clean.startsWith('gemini-3') &&
+      clean.startsWith('gemini-') &&
       !clean.includes(' ') &&
       clean.length < 50
     ) {
       return clean;
     }
   }
-  return 'gemini-3.1-flash-lite';
+  return 'gemini-2.5-flash';
 }
 
 /** Robust JSON extraction: strips markdown fences, finds outermost JSON, fixes trailing commas/control chars. */
@@ -150,7 +150,7 @@ async function generateWithFallback(
   const client = getGeminiClient();
   const primary = resolveGeminiModel();
   const candidateModels = Array.from(
-    new Set([primary, 'gemini-3.1-flash-lite', 'gemini-3.8-flash'])
+    new Set([primary, 'gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'])
   );
   const timeoutMs = config?.timeoutMs ?? 20_000;
 
@@ -637,13 +637,13 @@ ${QUESTION_EXAMPLE_JSON}`;
     try {
       const understanding = await callAndRepair();
       if (understanding) return understanding;
-      lastErr = new Error('malformed');
+      lastErr = new Error('پاسخ هوش مصنوعی در قالب مورد نظر نبود');
     } catch (err: any) {
       lastErr = err;
     }
   }
-  console.log('[understandJobV2] Prepared questionnaire preset for:', departmentId, roleTitle.trim() || 'default');
-  return buildDefaultUnderstanding(departmentId, roleTitle.trim());
+  console.error('[understandJobV2] AI questionnaire generation failed:', lastErr?.message || lastErr);
+  throw new Error(friendlyAiError(lastErr));
 }
 
 /** Convert GoogleGenAI/network failures into honest, actionable Persian messages. */

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Leaf } from 'lucide-react';
 
 interface SilanehLogoProps {
   className?: string;
@@ -6,59 +7,11 @@ interface SilanehLogoProps {
 
 export function SilanehLogo({ className = 'w-6 h-6' }: SilanehLogoProps) {
   return (
-    <svg
-      viewBox="0 0 500 360"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-label="لوگوی سیلانه سبز"
+    <div
+      className={`rounded-control bg-brand flex items-center justify-center text-white shrink-0 ${className}`}
+      aria-label="نشان سیلانه سبز"
     >
-      {/* Green Fold behind droplet */}
-      <path
-        d="M 195 125 C 200 95 220 85 240 92 C 260 98 275 110 310 135 L 290 148 C 265 130 240 120 220 122 Z"
-        fill="#00a87e"
-      />
-
-      {/* Main flowing leaf banner */}
-      <path
-        d="M 15 210 
-           C 85 155, 165 130, 230 128 
-           C 255 128, 280 132, 310 138 
-           C 370 120, 425 102, 475 82 
-           C 420 140, 350 205, 290 275 
-           C 235 215, 120 205, 15 210 Z"
-        fill="#00a87e"
-      />
-
-      {/* White crease extending from droplet */}
-      <path
-        d="M 268 135 Q 290 145 315 152"
-        stroke="#ffffff"
-        strokeWidth="4"
-        strokeLinecap="round"
-      />
-
-      {/* Water Droplet White Border / Mask */}
-      <path
-        d="M 255 52 
-           C 258 52, 284 96, 284 118 
-           C 284 135, 271 148, 255 148 
-           C 239 148, 226 135, 226 118 
-           C 226 96, 252 52, 255 52 Z"
-        fill="#00a87e"
-        stroke="#ffffff"
-        strokeWidth="9"
-        strokeLinejoin="round"
-      />
-
-      {/* Droplet Highlight (Inner Reflection) */}
-      <path
-        d="M 245 88 
-           C 240 98, 238 108, 240 122 
-           C 236 115, 236 102, 242 90 
-           C 243 88, 244 87, 245 88 Z"
-        fill="#ffffff"
-      />
-    </svg>
+      <Leaf className="w-3/5 h-3/5" strokeWidth={2.2} />
+    </div>
   );
 }

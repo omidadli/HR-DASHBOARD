@@ -50,3 +50,14 @@ export function normalizePersianText(raw: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+// Normalize Iranian phone numbers (+98, 0098, 98, 9xx -> 09xxxxxxxxx)
+export function normalizeIranianPhone(raw: string | null | undefined): string {
+  if (!raw) return '';
+  const eng = toEnglishDigits(raw).replace(/[^\d+]/g, '');
+  if (eng.startsWith('+98')) return '0' + eng.slice(3);
+  if (eng.startsWith('0098')) return '0' + eng.slice(4);
+  if (eng.startsWith('98') && eng.length === 12) return '0' + eng.slice(2);
+  if (eng.startsWith('9') && eng.length === 10) return '0' + eng;
+  return eng;
+}

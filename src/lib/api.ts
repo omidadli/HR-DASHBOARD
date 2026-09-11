@@ -132,6 +132,12 @@ export function fetchBankDepartments(): Promise<{
   return jsonFetch('/api/bank/departments');
 }
 
+export function fetchDepartmentBankBatches(
+  departmentId: string
+): Promise<{ batches: { id: string; roleTitle: string; createdAtJalali: string }[] }> {
+  return jsonFetch(`/api/bank/departments/${departmentId}/batches`);
+}
+
 export function fetchBankResumes(
   departmentId: string,
   params: Record<string, string | number | undefined>

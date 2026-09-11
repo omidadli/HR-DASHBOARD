@@ -307,16 +307,26 @@ async function startServer() {
     res.json({ departments: store.bankDepartmentCounts(), tags: store.bankTags() });
   });
 
+  app.get('/api/bank/departments/:id/batches', (req, res) => {
+    if (!DEPARTMENTS.some((d) => d.id === req.params.id)) {
+      return res.status(404).json({ error: 'دپارتمان نامعتبر است' });
+    }
+    res.json({ batches: store.departmentBankBatches(req.params.id) });
+  });
+
   app.get('/api/bank/departments/:id/resumes', (req, res) => {
     if (!DEPARTMENTS.some((d) => d.id === req.params.id)) {
       return res.status(404).json({ error: 'دپارتمان نامعتبر است' });
     }
     const f = req.query;
+    const rawTags = f.tags ? String(f.tags).split(',').map((t) => t.trim()).filter(Boolean) : undefined;
     const result = store.listBankResumes(req.params.id, {
       query: f.query ? String(f.query) : undefined,
       minScore: f.minScore ? Number(f.minScore) : undefined,
       minYears: f.minYears ? Number(f.minYears) : undefined,
       tag: f.tag ? String(f.tag) : undefined,
+      tags: rawTags,
+      batchId: f.batchId ? String(f.batchId) : undefined,
       since: (['all', 'week', 'month'].includes(String(f.since)) ? String(f.since) : 'all') as
         | 'all'
         | 'week'

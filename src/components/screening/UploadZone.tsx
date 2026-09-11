@@ -65,7 +65,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         onClick={() => !disabled && inputRef.current?.click()}
-        className={`border-2 border-dashed rounded-2xl p-5 sm:p-7 text-center cursor-pointer transition-all flex flex-col items-center gap-2.5 ${
+        className={`border-2 border-dashed rounded-card p-5 sm:p-7 text-center cursor-pointer transition-all flex flex-col items-center gap-2.5 ${
           disabled ? 'opacity-50 cursor-not-allowed' : ''
         } ${dragging ? 'border-brand bg-brand-soft/60 scale-[1.01]' : 'border-border-default bg-surface-1 hover:border-brand/50'}`}
       >
@@ -78,29 +78,29 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
           className="hidden"
           disabled={disabled}
         />
-        <div className="w-12 h-12 rounded-2xl bg-brand-soft text-brand flex items-center justify-center">
+        <div className="w-11 h-11 rounded-control bg-brand-soft text-brand flex items-center justify-center shadow-xs">
           <UploadCloud className="w-6 h-6" />
         </div>
-        <div className="text-sm sm:text-base font-black text-text-1">
-          رزومه‌ها رو همینجا بریز 📥
+        <div className="text-sm sm:text-base font-bold text-text-1">
+          رزومه‌ها را اینجا رها کنید یا برای انتخاب کلیک کنید
         </div>
-        <div className="text-[11px] sm:text-xs text-text-3">
+        <div className="text-xs text-text-3">
           کشیدن و رها کردن یا کلیک برای انتخاب — PDF، Word، ZIP و TXT — بدون سقف تعداد
         </div>
       </div>
 
       {unpacking && (
-        <div className="p-2.5 rounded-xl bg-info-soft border border-info/30 text-info text-xs font-bold text-center flex items-center justify-center gap-2">
+        <div className="p-2.5 rounded-control bg-info-soft border border-info/30 text-info text-xs font-bold text-center flex items-center justify-center gap-2">
           <Loader2 className="w-4 h-4 animate-spin" />
           در حال بازگشایی فایل فشرده…
         </div>
       )}
 
       {files.length > 0 && (
-        <div className="bg-surface-1 rounded-2xl border border-border-default p-3 flex flex-col gap-1.5">
-          <div className="flex items-center justify-between pb-1.5 border-b border-border-default text-[11px] text-text-3">
+        <div className="bg-surface-1 rounded-card border border-border-default p-3 flex flex-col gap-1.5 shadow-xs">
+          <div className="flex items-center justify-between pb-1.5 border-b border-border-default text-xs text-text-3">
             <span className="font-bold text-text-2 flex items-center gap-1.5">
-              <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+              <CheckCircle className="w-4 h-4 text-brand" />
               {toPersianDigits(files.length)} رزومه آماده
             </span>
             {!disabled && (

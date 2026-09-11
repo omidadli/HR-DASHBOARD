@@ -107,15 +107,15 @@ export const MessageModal: React.FC<MessageModalProps> = ({ record, onClose, onM
           <button
             type="button"
             onClick={copy}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-surface-2 text-text-2 text-xs font-black cursor-pointer hover:bg-border-default/50"
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-control bg-surface-2 text-text-2 text-xs font-bold cursor-pointer hover:bg-border-default/50"
           >
-            {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+            {copied ? <Check className="w-4 h-4 text-brand" /> : <Copy className="w-4 h-4" />}
             کپی متن
           </button>
           <button
             type="button"
             onClick={markSent}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-brand text-white text-xs font-black cursor-pointer hover:bg-brand-hover"
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-control bg-brand text-white text-xs font-bold cursor-pointer hover:bg-brand-hover"
           >
             <Send className="w-4 h-4" />
             به‌عنوان ارسال‌شده علامت بزن
@@ -131,7 +131,7 @@ export const MessageModal: React.FC<MessageModalProps> = ({ record, onClose, onM
               key={k.id}
               type="button"
               onClick={() => setKind(k.id)}
-              className={`py-2 rounded-xl text-[11px] font-black border cursor-pointer transition-all ${
+              className={`py-2 rounded-control text-xs font-bold border cursor-pointer transition-all ${
                 kind === k.id
                   ? 'bg-brand text-white border-brand'
                   : 'bg-surface-1 text-text-2 border-border-default hover:border-brand/40'
@@ -143,24 +143,24 @@ export const MessageModal: React.FC<MessageModalProps> = ({ record, onClose, onM
         </div>
 
         {draft?.subject && (
-          <div className="text-[11px] font-bold text-text-3">
-            موضوع: <span className="text-text-1">{draft.subject}</span>
+          <div className="text-xs font-medium text-text-3">
+            موضوع: <span className="text-text-1 font-bold">{draft.subject}</span>
           </div>
         )}
 
         <textarea
-          value={loading ? 'در حال نوشتن پیام با هوش مصنوعی…' : body}
+          value={loading ? 'در حال نگارش پیش‌نویس پیام با هوش مصنوعی…' : body}
           onChange={(e) => setBody(e.target.value)}
           rows={9}
           disabled={loading}
-          className="w-full p-3 rounded-xl bg-surface-1 border border-border-default focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none text-xs leading-relaxed resize-y font-sans"
+          className="w-full p-3.5 rounded-control bg-surface-1 border border-border-default focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none text-xs leading-relaxed resize-y font-sans"
         />
 
         {/* Channel buttons */}
         <div className="flex flex-wrap items-center gap-2">
           {loading ? (
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-text-3 font-bold">
-              <Loader2 className="w-4 h-4 animate-spin" /> لطفاً صبر کن
+            <span className="inline-flex items-center gap-1.5 text-xs text-text-3 font-medium">
+              <Loader2 className="w-4 h-4 animate-spin text-brand" /> در حال آماده‌سازی…
             </span>
           ) : (
             <>
@@ -169,47 +169,47 @@ export const MessageModal: React.FC<MessageModalProps> = ({ record, onClose, onM
                 onClick={(e) => !wa && e.preventDefault()}
                 target="_blank"
                 rel="noreferrer"
-                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black border ${
+                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-control text-xs font-medium border transition-colors ${
                   hasPhone
-                    ? 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100 cursor-pointer'
-                    : 'bg-surface-2 border-border-default text-text-3 cursor-not-allowed'
+                    ? 'bg-surface-1 border-border-default text-text-1 hover:border-brand/40 hover:bg-surface-2 cursor-pointer shadow-xs'
+                    : 'bg-surface-2 border-border-default text-text-3 cursor-not-allowed opacity-60'
                 }`}
               >
-                <Phone className="w-3.5 h-3.5" /> واتساپ
+                <Phone className="w-3.5 h-3.5 text-text-2" /> واتساپ
               </a>
               <a
                 href={sms || '#'}
                 onClick={(e) => !sms && e.preventDefault()}
-                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black border ${
+                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-control text-xs font-medium border transition-colors ${
                   hasPhone
-                    ? 'bg-blue-50 border-blue-300 text-blue-800 hover:bg-blue-100 cursor-pointer'
-                    : 'bg-surface-2 border-border-default text-text-3 cursor-not-allowed'
+                    ? 'bg-surface-1 border-border-default text-text-1 hover:border-brand/40 hover:bg-surface-2 cursor-pointer shadow-xs'
+                    : 'bg-surface-2 border-border-default text-text-3 cursor-not-allowed opacity-60'
                 }`}
               >
-                <Send className="w-3.5 h-3.5" /> پیامک
+                <Send className="w-3.5 h-3.5 text-text-2" /> پیامک
               </a>
               <a
                 href={mail || '#'}
                 onClick={(e) => !mail && e.preventDefault()}
-                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black border ${
+                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-control text-xs font-medium border transition-colors ${
                   hasEmail
-                    ? 'bg-violet-50 border-violet-300 text-violet-800 hover:bg-violet-100 cursor-pointer'
-                    : 'bg-surface-2 border-border-default text-text-3 cursor-not-allowed'
+                    ? 'bg-surface-1 border-border-default text-text-1 hover:border-brand/40 hover:bg-surface-2 cursor-pointer shadow-xs'
+                    : 'bg-surface-2 border-border-default text-text-3 cursor-not-allowed opacity-60'
                 }`}
               >
-                <Mail className="w-3.5 h-3.5" /> ایمیل
+                <Mail className="w-3.5 h-3.5 text-text-2" /> ایمیل
               </a>
               {!hasPhone && !hasEmail && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  شماره تماس یا ایمیلی در رزومه ثبت نشده؛ متن را کپی کن
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-warning">
+                  <AlertCircle className="w-3.5 h-3.5 text-warning" />
+                  شماره تماس یا ایمیلی در رزومه ثبت نشده است؛ می‌توانید متن را کپی نمایید.
                 </span>
               )}
             </>
           )}
         </div>
-        <p className="text-[10px] text-text-3 leading-relaxed">
-          ارسال پیام از همین اپ انجام نمی‌شود؛ متن ساخته می‌شود و با اپ دلخواهت (واتساپ/پیامک/ایمیل) باز می‌شود.
+        <p className="text-xs text-text-3 leading-relaxed">
+          ارسال پیام از این سامانه به صورت مستقیم انجام نمی‌شود؛ پیش‌نویس پیام آماده شده و با اپلیکیشن یا سرویس دلخواه شما باز می‌شود.
         </p>
       </div>
     </Modal>

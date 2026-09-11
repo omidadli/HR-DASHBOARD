@@ -88,8 +88,13 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
   const replaceRecord = (updated: ResumeRecord) => {
     setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
     setDrawerRecord((d) => (d?.id === updated.id ? updated : d));
-    // refresh batch stats from server lightly
-    fetchBatch(batchId).then((data) => setBatch(data.batch)).catch(() => {});
+    fetchBatch(batchId)
+      .then((data) => {
+        setBatch(data.batch);
+        setRecords(data.resumes);
+        setDrawerRecord((d) => (d ? data.resumes.find((x) => x.id === d.id) || d : null));
+      })
+      .catch(() => {});
   };
 
   const removeRecord = (id: string) => {
@@ -145,6 +150,17 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         groups[r.category].push(r);
       }
     }
+    for (const key of ['INTERVIEW', 'REVIEW', 'REJECT'] as Recommendation[]) {
+      groups[key].sort((a, b) => {
+        if (a.rankInCategory != null && b.rankInCategory != null) {
+          return a.rankInCategory - b.rankInCategory;
+        }
+        if (b.score !== a.score) return b.score - a.score;
+        const ya = a.facts?.yearsExperience ?? -1;
+        const yb = b.facts?.yearsExperience ?? -1;
+        return yb - ya;
+      });
+    }
     return groups;
   }, [records]);
 
@@ -156,14 +172,20 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
 
   const setActiveTab = (t: Recommendation) => {
     setTab(t);
-    if (!pages[t]) setPages((p) => ({ ...p, [t]: 1 }));
+    setPages((p) => ({ ...p, [t]: 1 }));
   };
 
   if (loading) {
     return (
-      <div className="w-full max-w-4xl mx-auto px-4 py-24 flex flex-col items-center gap-3 text-text-3">
-        <div className="w-10 h-10 rounded-full border-4 border-brand/20 border-t-brand animate-spin" />
-        <span className="text-sm font-bold">در حال بارگذاری نتایج…</span>
+      <div className="w-full max-w-4xl mx-auto px-4 py-6 sm:py-8 flex flex-col gap-4 animate-pulse">
+        <div className="h-24 rounded-card bg-surface-1 border border-border-default" />
+        <div className="h-16 rounded-card bg-surface-1 border border-border-default" />
+        <div className="h-12 rounded-control bg-surface-1 border border-border-default" />
+        <div className="flex flex-col gap-3">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="h-44 rounded-card bg-surface-1 border border-border-default" />
+          ))}
+        </div>
       </div>
     );
   }
@@ -172,8 +194,12 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
     return (
       <div className="w-full max-w-md mx-auto px-4 py-24 flex flex-col items-center gap-4 text-center">
         <AlertTriangle className="w-10 h-10 text-danger" />
-        <p className="text-sm font-bold text-danger">{loadError || 'نتیجه‌ای پیدا نشد'}</p>
-        <button onClick={load} className="px-5 py-2.5 rounded-xl bg-brand text-white text-xs font-black cursor-pointer">
+        <p className="text-xs font-bold text-danger">{loadError || 'نتیجه‌ای پیدا نشد'}</p>
+        <button
+          type="button"
+          onClick={load}
+          className="px-5 py-2.5 rounded-control bg-brand text-white text-xs font-bold cursor-pointer hover:bg-brand-hover shadow-xs"
+        >
           تلاش مجدد
         </button>
       </div>
@@ -188,14 +214,14 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         key={t}
         type="button"
         onClick={() => setActiveTab(t)}
-        className={`flex-1 min-h-[46px] inline-flex items-center justify-center gap-1.5 rounded-xl border text-xs sm:text-sm font-black px-2 cursor-pointer transition-all ${
+        className={`flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 rounded-control border text-xs sm:text-sm font-bold px-3 cursor-pointer transition-all ${
           active ? meta.tabActive : meta.tabIdle
         }`}
       >
         {icon}
         <span>{meta.label}</span>
         <span
-          className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
+          className={`text-xs font-bold px-2 py-0.5 rounded-full ${
             active ? 'bg-white/25' : 'bg-surface-2 text-text-3'
           }`}
         >
@@ -217,17 +243,33 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
 
   return (
     <div className="w-full max-w-4xl mx-auto px-4 py-6 sm:py-8 flex flex-col gap-5">
+      {/* Print-only Report Header */}
+      <div className="hidden print-only mb-4 pb-4 border-b border-gray-300">
+        <h1 className="text-lg font-bold text-gray-900">گزارش غربالگری هوشمند رزومه‌ها — هلدینگ سیلانه سبز</h1>
+        <div className="text-xs text-gray-600 mt-1 flex gap-4">
+          <span><strong>موقعیت:</strong> {batch.roleTitle || batch.departmentName}</span>
+          <span><strong>دپارتمان:</strong> {batch.departmentName}</span>
+          <span><strong>تاریخ:</strong> {batch.createdAtJalali}</span>
+        </div>
+        <div className="flex gap-4 mt-2 text-xs text-gray-700 bg-gray-50 p-2 rounded border border-gray-200">
+          <span>کل: {toPersianDigits(batch.stats.total)}</span>
+          <span>دعوت به مصاحبه: {toPersianDigits(batch.stats.interview)}</span>
+          <span>بررسی بیشتر: {toPersianDigits(batch.stats.review)}</span>
+          <span>عدم انطباق: {toPersianDigits(batch.stats.reject)}</span>
+          {batch.stats.unjudgeable > 0 && <span>غیرقابل‌ارزیابی: {toPersianDigits(batch.stats.unjudgeable)}</span>}
+        </div>
+      </div>
       {/* Summary banner */}
-      <div className="bg-brand text-white p-5 rounded-3xl shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-brand text-white p-5 rounded-card shadow-e1 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-white/15 flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-control bg-white/15 flex items-center justify-center shrink-0">
             <Award className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-base sm:text-lg font-black leading-snug">
-              از {toPersianDigits(batch.stats.total)} رزومه، {toPersianDigits(batch.stats.interview)} نفر برای مصاحبه پیشنهاد می‌شن 🎯
+            <h2 className="text-base sm:text-lg font-bold leading-snug">
+              از {toPersianDigits(batch.stats.total)} رزومه، {toPersianDigits(batch.stats.interview)} نفر برای مصاحبه پیشنهاد شده‌اند
             </h2>
-            <span className="text-[11px] text-white/80 mt-0.5 block">
+            <span className="text-xs text-white/80 mt-0.5 block">
               {batch.roleTitle || batch.departmentName} — {batch.createdAtJalali}
             </span>
           </div>
@@ -236,21 +278,21 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
           <button
             type="button"
             onClick={() => void exportBatchToExcel(batch, records)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white text-brand text-xs font-black cursor-pointer hover:bg-white/90"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-control bg-white text-brand text-xs font-bold cursor-pointer hover:bg-white/90 shadow-xs"
           >
             <Download className="w-4 h-4" /> دانلود گزارش
           </button>
           <button
             type="button"
             onClick={() => window.print()}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/20 text-white text-xs font-bold cursor-pointer hover:bg-white/30"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control bg-white/20 text-white text-xs font-bold cursor-pointer hover:bg-white/30"
           >
             <Printer className="w-4 h-4" /> چاپ
           </button>
           <button
             type="button"
             onClick={onNewScreening}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/20 text-white text-xs font-bold cursor-pointer hover:bg-white/30"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control bg-white/20 text-white text-xs font-bold cursor-pointer hover:bg-white/30"
           >
             <RotateCcw className="w-4 h-4" /> جدید
           </button>
@@ -258,15 +300,15 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
       </div>
 
       {/* AI explanation */}
-      <div className="bg-surface-1 rounded-2xl border border-brand/30 p-4 flex items-start gap-3">
-        <div className="w-9 h-9 rounded-xl bg-brand-soft text-brand flex items-center justify-center shrink-0">
-          <Bot className="w-4.5 h-4.5" />
+      <div className="bg-surface-1 rounded-card border border-brand/20 p-4 flex items-start gap-3 shadow-xs">
+        <div className="w-9 h-9 rounded-control bg-brand-soft text-brand flex items-center justify-center shrink-0">
+          <Bot className="w-5 h-5" />
         </div>
         <div>
-          <div className="text-[11px] font-black text-brand mb-0.5 flex items-center gap-1">
-            هوش مصنوعی این شغل رو این‌طوری فهمیده 🤖
+          <div className="text-xs font-bold text-brand mb-0.5 flex items-center gap-1">
+            تحلیل هوش مصنوعی از این موقعیت شغلی
           </div>
-          <p className="text-xs text-text-2 leading-relaxed font-bold">{batch.understanding.plainExplanation}</p>
+          <p className="text-xs text-text-2 leading-relaxed font-medium">{batch.understanding.plainExplanation}</p>
         </div>
       </div>
 
@@ -310,28 +352,28 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
 
       {/* Unjudgeable */}
       {unjudgeable.length > 0 && (
-        <div className="rounded-2xl border border-border-default bg-surface-1 overflow-hidden no-print">
+        <div className="rounded-card border border-border-default bg-surface-1 overflow-hidden no-print shadow-xs">
           <button
             type="button"
             onClick={() => setShowUnjudgeable((s) => !s)}
-            className="w-full flex items-center justify-between p-4 cursor-pointer"
+            className="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-2/40 transition-colors"
           >
-            <span className="inline-flex items-center gap-2 text-xs font-black text-text-2">
-              <AlertTriangle className="w-4 h-4 text-slate-500" />
-              {UNJUDGEABLE_META.emoji} غیرقابل‌ارزیابی ({toPersianDigits(unjudgeable.length)})
+            <span className="inline-flex items-center gap-2 text-xs font-bold text-text-2">
+              <AlertTriangle className="w-4 h-4 text-text-3" />
+              غیرقابل‌ارزیابی ({toPersianDigits(unjudgeable.length)})
             </span>
             <ChevronDown className={`w-4 h-4 text-text-3 transition-transform ${showUnjudgeable ? 'rotate-180' : ''}`} />
           </button>
           {showUnjudgeable && (
-            <div className="px-4 pb-4 flex flex-col gap-1.5">
+            <div className="px-4 pb-4 flex flex-col gap-2">
               {unjudgeable.map((r) => (
                 <div
                   key={r.id}
-                  className="flex items-start justify-between gap-2 p-2.5 rounded-xl bg-surface-2/60 border border-border-default/70"
+                  className="flex items-start justify-between gap-2 p-3 rounded-control bg-surface-2/60 border border-border-default"
                 >
                   <div className="min-w-0">
-                    <div className="text-[11px] font-black text-text-1 truncate">{r.fileName}</div>
-                    <div className="text-[10px] text-text-3 mt-0.5">
+                    <div className="text-xs font-bold text-text-1 truncate">{r.fileName}</div>
+                    <div className="text-xs text-text-3 mt-0.5">
                       {r.category === 'ERROR' ? r.errorMessage || 'خطا در تحلیل' : r.unjudgeableReason}
                     </div>
                   </div>
@@ -339,9 +381,9 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
                     <button
                       type="button"
                       onClick={() => handleRerun(r)}
-                      className="shrink-0 inline-flex items-center gap-1 text-[10px] font-black text-brand px-2 py-1.5 rounded-lg bg-brand-soft cursor-pointer"
+                      className="shrink-0 inline-flex items-center gap-1 text-xs font-bold text-brand px-2.5 py-1.5 rounded-control bg-brand-soft border border-brand/20 cursor-pointer hover:bg-brand-soft/80"
                     >
-                      <RotateCcw className={`w-3 h-3 ${rerunningId === r.id ? 'animate-spin' : ''}`} />
+                      <RotateCcw className={`w-3.5 h-3.5 ${rerunningId === r.id ? 'animate-spin' : ''}`} />
                       تلاش دوباره
                     </button>
                   )}
@@ -389,12 +431,11 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         open={Boolean(deleteTarget)}
         title="حذف رزومه"
         danger
-        confirmLabel="حذف کن"
+        confirmLabel="حذف رزومه"
         message={
           <>
-            رزومه
-            <span className="font-black text-text-1"> «{deleteTarget?.candidateName || deleteTarget?.fileName}» </span>
-            برای همیشه از نتایج{deleteTarget?.inBank ? ' و بانک رزومه' : ''} حذف می‌شود. مطمئنی؟
+            این رزومه{deleteTarget?.inBank ? ' از نتایج غربالگری و بانک رزومه' : ' از نتایج غربالگری'} حذف شود؟
+            {deleteTarget?.candidateName ? ` (${deleteTarget.candidateName})` : ''}
           </>
         }
         onConfirm={handleDelete}

@@ -31,22 +31,22 @@ function BooleanRow({
     <button
       type="button"
       onClick={onToggle}
-      className={`w-full flex items-center gap-3 p-3 rounded-xl border text-right transition-all cursor-pointer min-h-[48px] ${
+      className={`w-full flex items-center gap-3 p-3 rounded-control border text-right transition-all cursor-pointer min-h-[48px] ${
         checked
           ? 'border-brand/50 bg-brand-soft/60'
           : 'border-border-default bg-surface-1 hover:border-brand/30'
       }`}
     >
       <span
-        className={`w-5.5 h-5.5 min-w-[22px] min-h-[22px] rounded-md border-2 flex items-center justify-center transition-all ${
+        className={`w-5.5 h-5.5 min-w-[22px] min-h-[22px] rounded-md border flex items-center justify-center transition-all ${
           checked ? 'bg-brand border-brand text-white' : 'border-border-strong bg-surface-1'
         }`}
       >
-        {checked && <Check className="w-3.5 h-3.5" strokeWidth={3} />}
+        {checked && <Check className="w-3.5 h-3.5" strokeWidth={2.5} />}
       </span>
       <span className="text-xs sm:text-sm font-bold text-text-1 leading-relaxed flex-1">{q.label}</span>
       {q.kind === 'knockout' && (
-        <span className="text-[10px] font-black text-danger bg-danger-soft border border-danger/20 px-1.5 py-0.5 rounded-full shrink-0">
+        <span className="text-xs font-bold text-text-2 bg-surface-2 border border-border-default px-2 py-0.5 rounded-full shrink-0">
           شرط اصلی
         </span>
       )}
@@ -66,7 +66,7 @@ function ChipGroup({
   multi: boolean;
 }) {
   return (
-    <div className="p-3 rounded-xl border border-border-default bg-surface-1 flex flex-col gap-2">
+    <div className="p-3 rounded-control border border-border-default bg-surface-1 flex flex-col gap-2">
       <span className="text-xs sm:text-sm font-bold text-text-1">{q.label}</span>
       <div className="flex flex-wrap gap-1.5">
         {q.options.map((o) => {
@@ -76,7 +76,7 @@ function ChipGroup({
               key={o.value}
               type="button"
               onClick={() => onToggle(o.value)}
-              className={`px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-bold border transition-all cursor-pointer min-h-[36px] ${
+              className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-all cursor-pointer min-h-[36px] ${
                 active
                   ? 'bg-brand text-white border-brand shadow-xs'
                   : 'bg-surface-2 text-text-2 border-border-default hover:border-brand/40'
@@ -124,9 +124,9 @@ export const QuestionsPanel: React.FC<QuestionsPanelProps> = ({
 
   return (
     <div className="flex flex-col gap-2.5">
-      <span className="text-sm font-black text-text-1 flex items-center gap-1.5">
+      <span className="text-sm font-bold text-text-1 flex items-center gap-1.5">
         <ListChecks className="w-4 h-4 text-brand" />
-        چی برات مهمه؟ تیک بزن 👇
+        چی برات مهمه؟ تیک بزن
       </span>
 
       {loading && (
