@@ -156,7 +156,7 @@ export const QuestionsPanel: React.FC<QuestionsPanelProps> = ({
         </div>
       )}
 
-      {!loading && !error && understanding && (
+      {!loading && !error && understanding && Array.isArray(understanding.questions) && (
         <div className="flex flex-col gap-2">
           {understanding.questions.map((q) => {
             if (q.type === 'boolean') {

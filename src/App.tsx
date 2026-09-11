@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { Sparkles, Library, Leaf } from 'lucide-react';
+import { Sparkles, Library } from 'lucide-react';
+import { SilanehLogo } from './components/common/SilanehLogo';
 import {
   JobUnderstanding,
   ResumeFileItem,
@@ -126,8 +127,8 @@ export function App() {
       <header className="sticky top-0 z-40 bg-surface-1/95 backdrop-blur border-b border-border-default no-print">
         <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="w-8 h-8 rounded-xl bg-brand text-white flex items-center justify-center shrink-0">
-              <Leaf className="w-4.5 h-4.5" />
+            <span className="w-9 h-9 rounded-xl bg-brand-soft border border-brand/20 flex items-center justify-center shrink-0 p-1">
+              <SilanehLogo className="w-full h-full object-contain" />
             </span>
             <div className="leading-tight min-w-0">
               <div className="text-xs sm:text-sm font-black text-text-1 truncate">سیلانه سبز</div>

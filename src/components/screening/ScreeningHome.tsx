@@ -56,6 +56,9 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
     try {
       const u = await fetchUnderstanding(deptId, title, notes);
       if (seq !== reqSeq.current) return;
+      if (!u || !Array.isArray(u.questions)) {
+        throw new Error('قالب پرسش‌نامه دریافتی نامعتبر است');
+      }
       setUnderstanding(u);
       setAnswers((prev) => {
         const next = { ...prev };
@@ -63,7 +66,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
           if (next[q.id] === undefined) {
             if (q.type === 'boolean') next[q.id] = q.defaultChecked;
             else if (q.type === 'single') next[q.id] = q.defaultValue;
-            else next[q.id] = [...q.defaultValues];
+            else next[q.id] = [...(q.defaultValues || [])];
           }
         }
         return next;

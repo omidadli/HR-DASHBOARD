@@ -13,6 +13,8 @@
  *  - When Gemini is unavailable, screening questions FAIL (no fake questions),
  *    while individual evaluations fall back to a clearly-labeled LOCAL engine.
  */
+import dotenv from 'dotenv';
+dotenv.config({ override: true });
 import { GoogleGenAI } from '@google/genai';
 import {
   AnalysisEngine,
@@ -37,14 +39,6 @@ function getGeminiClient(): GoogleGenAI {
   if (!secret) {
     throw new Error('GEMINI_API_KEY environment variable is not configured on the server.');
   }
-  // Standard AI Studio API keys start with "AIza". Short-lived ephemeral tokens
-  // (copied from AI Studio's Live/"Connect" demos) start with "AQ." and must be
-  // sent as an Authorization: Bearer token rather than an x-goog-api-key header.
-  if (secret.startsWith('AQ.')) {
-    process.env.GOOGLE_GENAI_ACCESS_TOKEN = secret;
-    return new GoogleGenAI({});
-  }
-  delete process.env.GOOGLE_GENAI_ACCESS_TOKEN;
   return new GoogleGenAI({ apiKey: secret });
 }
 
@@ -52,11 +46,15 @@ export function resolveGeminiModel(): string {
   const envModel = process.env.GEMINI_MODEL?.trim();
   if (envModel) {
     const clean = envModel.replace(/^models\//, '');
-    if (clean.startsWith('gemini-') && !clean.includes(' ') && clean.length < 50) {
+    if (
+      clean.startsWith('gemini-3') &&
+      !clean.includes(' ') &&
+      clean.length < 50
+    ) {
       return clean;
     }
   }
-  return 'gemini-2.5-flash';
+  return 'gemini-3.1-flash-lite';
 }
 
 /** Robust JSON extraction: strips markdown fences, finds outermost JSON, fixes trailing commas/control chars. */
@@ -124,6 +122,10 @@ export function cleanAndParseJson<T>(rawText: string, fallback: T): T {
 let circuitOpenUntil = 0;
 let circuitConsecutiveFailures = 0;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function isGeminiCircuitOpen(): boolean {
   return Date.now() < circuitOpenUntil;
 }
@@ -132,57 +134,63 @@ export function recordGeminiSuccess() {
   circuitOpenUntil = 0;
 }
 export function recordGeminiFailure(isQuota: boolean, isHighDemand: boolean) {
+  // 503 high demand spikes are temporary model-level spikes, not quota depletion
+  if (isHighDemand) return;
   circuitConsecutiveFailures++;
-  const cooldownMs = isQuota ? 120_000 : isHighDemand ? 45_000 : 30_000;
-  circuitOpenUntil = Date.now() + cooldownMs;
-  console.log(
-    `[Gemini] Circuit open for ${Math.round(cooldownMs / 1000)}s (` +
-      `${isQuota ? '429 quota' : isHighDemand ? '503 busy' : 'error'}).`
-  );
+  if (circuitConsecutiveFailures >= 4) {
+    const cooldownMs = isQuota ? 15_000 : 5_000;
+    circuitOpenUntil = Date.now() + cooldownMs;
+  }
 }
 
 async function generateWithFallback(
   prompt: string,
   config?: { temperature?: number; responseMimeType?: string; timeoutMs?: number }
 ): Promise<string> {
-  if (isGeminiCircuitOpen()) throw new Error('GEMINI_CIRCUIT_OPEN');
   const client = getGeminiClient();
   const primary = resolveGeminiModel();
   const candidateModels = Array.from(
-    new Set([primary, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'])
+    new Set([primary, 'gemini-3.1-flash-lite', 'gemini-3.8-flash'])
   );
   const timeoutMs = config?.timeoutMs ?? 20_000;
 
   let lastError: any = null;
   for (const model of candidateModels) {
-    try {
-      const call = client.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          temperature: config?.temperature ?? 0.1,
-          responseMimeType: config?.responseMimeType ?? 'application/json',
-        },
-      });
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms on ${model}`)), timeoutMs)
-      );
-      const res = await Promise.race([call, timeout]);
-      if (res.text) {
-        recordGeminiSuccess();
-        return res.text;
-      }
-    } catch (err: any) {
-      lastError = err;
-      const msg = String(err?.message || '');
-      const isQuota = err?.status === 429 || /429|quota|RESOURCE_EXHAUSTED/i.test(msg);
-      const isHighDemand = err?.status === 503 || /503|UNAVAILABLE|overloaded|high demand/i.test(msg);
-      if (isQuota || isHighDemand) {
-        recordGeminiFailure(isQuota, isHighDemand);
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const call = client.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            temperature: config?.temperature ?? 0.1,
+            responseMimeType: config?.responseMimeType ?? 'application/json',
+          },
+        });
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms on ${model}`)), timeoutMs)
+        );
+        const res = await Promise.race([call, timeout]);
+        if (res.text) {
+          recordGeminiSuccess();
+          return res.text;
+        }
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || '');
+        const isHighDemand = err?.status === 503 || /503|UNAVAILABLE|overloaded|high demand/i.test(msg);
+        if (isHighDemand && attempt < maxAttempts) {
+          await sleep(1000 + Math.floor(Math.random() * 500));
+          continue;
+        }
         break;
       }
     }
   }
+  const lastMsg = String(lastError?.message || '');
+  const isQuota = lastError?.status === 429 || /429|quota|RESOURCE_EXHAUSTED/i.test(lastMsg);
+  const isHighDemand = lastError?.status === 503 || /503|UNAVAILABLE|overloaded|high demand/i.test(lastMsg);
+  recordGeminiFailure(isQuota, isHighDemand);
   throw lastError || new Error('All Gemini models are temporarily unavailable.');
 }
 
@@ -320,6 +328,274 @@ function repairUnderstanding(raw: any, departmentId: string, roleTitle: string):
   }
 }
 
+export function buildDefaultUnderstanding(
+  departmentId: string,
+  roleTitle: string
+): JobUnderstanding {
+  const dept = getDepartment(departmentId);
+  const title = roleTitle.trim();
+
+  switch (departmentId) {
+    case 'sales':
+      return {
+        department: dept.name,
+        departmentId,
+        roleTitle: title,
+        seniority: 'کارشناسی',
+        plainExplanation: title
+          ? `معیارها و پرسش‌نامه برای موقعیت «${title}» بر اساس مهارت‌های فروش میدانی، فن بیان و تارگت‌های پخش تنظیم شد.`
+          : 'معیارها و پرسش‌نامه بر اساس مهارت‌های فروش میدانی، فن بیان و تارگت‌های پخش تنظیم شد.',
+        thresholds: { interview: 75, review: 50 },
+        criteria: [
+          { id: 'c1', title: 'سابقه و نتایج فروش میدانی، مویرگی یا ویزیتوری', weight: 35, mustHave: true },
+          { id: 'c2', title: 'فن بیان، اصول مذاکره و متقاعدسازی مشتری', weight: 25, mustHave: true },
+          { id: 'c3', title: 'آشنایی با پخش مویرگی و صنعت کالاهای تندمصرف (FMCG)', weight: 20, mustHave: false },
+          { id: 'c4', title: 'آمادگی تردد میدانی، انگیزه تارگت و پایداری شغلی', weight: 20, mustHave: false },
+        ],
+        questions: [
+          { id: 'q1', kind: 'knockout', type: 'boolean', label: 'سابقه فروش حضوری، ویزیتوری یا پخش مویرگی داشته باشد؟', weight: 25, defaultChecked: true },
+          { id: 'q2', kind: 'knockout', type: 'boolean', label: 'آماده تردد مستمر در مسیر ویزیت و مناطق شهری باشد؟', weight: 20, defaultChecked: true },
+          { id: 'q3', kind: 'bonus', type: 'boolean', label: 'سابقه کار در صنعت پخش FMCG یا آرایشی-بهداشتی داشته باشد؟', weight: 15, defaultChecked: true },
+          { id: 'q4', kind: 'bonus', type: 'boolean', label: 'سابقه کار با نرم‌افزارهای سفارش‌گیری یا تبلت فروش داشته باشد؟', weight: 15, defaultChecked: false },
+          {
+            id: 'q-min-exp',
+            kind: 'knockout',
+            type: 'single',
+            label: 'حداقل سابقه کار مورد انتظار',
+            weight: 15,
+            options: [
+              { value: 'any', label: 'فرقی نمی‌کند' },
+              { value: '1', label: 'بالای ۱ سال' },
+              { value: '3', label: 'بالای ۳ سال' },
+              { value: '5', label: 'بالای ۵ سال' },
+            ],
+            defaultValue: '1',
+          },
+          {
+            id: 'q-skills',
+            kind: 'bonus',
+            type: 'multi',
+            label: 'مهارت‌های تکمیلی اولویت‌دار',
+            weight: 10,
+            options: [
+              { value: 'nego', label: 'اصول مذاکره و متقاعدسازی' },
+              { value: 'crm', label: 'ارتباط با مشتری (CRM)' },
+              { value: 'merch', label: 'مرچندایزینگ و چیدمان فروشگاهی' },
+              { value: 'route', label: 'مسیربندی و بازاریابی منطقه‌ای' },
+            ],
+            defaultValues: ['nego'],
+          },
+        ],
+      };
+
+    case 'manufacturing':
+      return {
+        department: dept.name,
+        departmentId,
+        roleTitle: title,
+        seniority: 'کارشناسی / فنی',
+        plainExplanation: title
+          ? `معیارها و پرسش‌نامه برای «${title}» با تمرکز بر سابقه خط تولید، کار شیفتی و انضباط کارگاهی تنظیم شد.`
+          : 'معیارها و پرسش‌نامه با تمرکز بر سابقه خط تولید، کار شیفتی و انضباط کارگاهی تنظیم شد.',
+        thresholds: { interview: 75, review: 50 },
+        criteria: [
+          { id: 'c1', title: 'سابقه کارگاهی، اپراتوری خط تولید یا کار با ماشین‌آلات صنعتی', weight: 35, mustHave: true },
+          { id: 'c2', title: 'آمادگی کار در شیفت‌های چرخشی (روز/شب) و انضباط فردی', weight: 25, mustHave: true },
+          { id: 'c3', title: 'رعایت اصول ایمنی محیط کار و ضوابط بهداشتی کارخانه', weight: 20, mustHave: false },
+          { id: 'c4', title: 'مدارک فنی‌وحرفه‌ای مرتبط یا مهارت در ابزار دقیق', weight: 20, mustHave: false },
+        ],
+        questions: [
+          { id: 'q1', kind: 'knockout', type: 'boolean', label: 'سابقه کار در محیط کارخانه یا خط تولید داشته باشد؟', weight: 25, defaultChecked: true },
+          { id: 'q2', kind: 'knockout', type: 'boolean', label: 'آماده کار در شیفت‌های چرخشی و اضافه کاری باشد؟', weight: 25, defaultChecked: true },
+          { id: 'q3', kind: 'bonus', type: 'boolean', label: 'مدرک فنی‌وحرفه‌ای یا دیپلم/کاردانی فنی داشته باشد؟', weight: 15, defaultChecked: true },
+          { id: 'q4', kind: 'bonus', type: 'boolean', label: 'تجربه کار با ماشین‌آلات بسته‌بندی یا تولید داشته باشد؟', weight: 15, defaultChecked: false },
+          {
+            id: 'q-min-exp',
+            kind: 'knockout',
+            type: 'single',
+            label: 'حداقل سابقه کار مورد انتظار',
+            weight: 10,
+            options: [
+              { value: 'any', label: 'فرقی نمی‌کند' },
+              { value: '1', label: 'بالای ۱ سال' },
+              { value: '3', label: 'بالای ۳ سال' },
+              { value: '5', label: 'بالای ۵ سال' },
+            ],
+            defaultValue: '1',
+          },
+          {
+            id: 'q-skills',
+            kind: 'bonus',
+            type: 'multi',
+            label: 'مهارت‌های تخصصی کارگاهی',
+            weight: 10,
+            options: [
+              { value: 'pm', label: 'نگهداری و سرویس ماشین‌آلات (PM)' },
+              { value: 'tools', label: 'کار با ابزارهای اندازه‌گیری دقیق' },
+              { value: 'quality', label: 'کنترل اولیه حین تولید' },
+              { value: 'shift-log', label: 'ثبت گزارش‌های روزانه شیفت' },
+            ],
+            defaultValues: ['pm'],
+          },
+        ],
+      };
+
+    case 'finance':
+      return {
+        department: dept.name,
+        departmentId,
+        roleTitle: title,
+        seniority: 'کارشناسی',
+        plainExplanation: title
+          ? `معیارها و پرسش‌نامه برای «${title}» بر اساس تسلط به نرم‌افزارهای مالی، حسابداری صنعتی و قوانین مالیاتی تدوین شد.`
+          : 'معیارها و پرسش‌نامه بر اساس نرم‌افزارهای مالی، حسابداری صنعتی و قوانین مالیاتی تدوین شد.',
+        thresholds: { interview: 75, review: 50 },
+        criteria: [
+          { id: 'c1', title: 'تسلط بر نرم‌افزارهای مالی و حسابداری (سپیدار / همکاران سیستم)', weight: 35, mustHave: true },
+          { id: 'c2', title: 'تسلط بر قوانین مالیاتی، بیمه و ارسال اظهارنامه و سامانه مودیان', weight: 25, mustHave: true },
+          { id: 'c3', title: 'حسابداری صنعتی، بهای تمام‌شده و کنترل انبار', weight: 20, mustHave: false },
+          { id: 'c4', title: 'دقت محاسباتی، تسلط بر اکسل پیشرفته و گزارش‌گیری مالی', weight: 20, mustHave: false },
+        ],
+        questions: [
+          { id: 'q1', kind: 'knockout', type: 'boolean', label: 'سابقه کار با نرم‌افزارهای مالی (مانند سپیدار یا همکاران سیستم) داشته باشد؟', weight: 25, defaultChecked: true },
+          { id: 'q2', kind: 'knockout', type: 'boolean', label: 'تحصیلات دانشگاهی در رشته حسابداری یا مدیریت مالی داشته باشد؟', weight: 20, defaultChecked: true },
+          { id: 'q3', kind: 'bonus', type: 'boolean', label: 'تسلط به اکسل و فرمول‌نویسی پیشرفته مالی داشته باشد؟', weight: 15, defaultChecked: true },
+          { id: 'q4', kind: 'bonus', type: 'boolean', label: 'تجربه کار در شرکت‌های تولیدی یا بازرگانی داشته باشد؟', weight: 15, defaultChecked: true },
+          {
+            id: 'q-min-exp',
+            kind: 'knockout',
+            type: 'single',
+            label: 'حداقل سابقه کار مورد انتظار',
+            weight: 15,
+            options: [
+              { value: 'any', label: 'فرقی نمی‌کند' },
+              { value: '1', label: 'بالای ۱ سال' },
+              { value: '3', label: 'بالای ۳ سال' },
+              { value: '5', label: 'بالای ۵ سال' },
+            ],
+            defaultValue: '1',
+          },
+          {
+            id: 'q-skills',
+            kind: 'bonus',
+            type: 'multi',
+            label: 'حوزه‌های مسلط حسابداری',
+            weight: 10,
+            options: [
+              { value: 'tax', label: 'سامانه مودیان و مالیات ارزش افزوده' },
+              { value: 'payroll', label: 'حقوق و دستمزد و لیست بیمه' },
+              { value: 'cost', label: 'حسابداری بهای تمام‌شده' },
+              { value: 'treasury', label: 'خزانه‌داری و مغایرت بانکی' },
+            ],
+            defaultValues: ['payroll', 'tax'],
+          },
+        ],
+      };
+
+    case 'it':
+      return {
+        department: dept.name,
+        departmentId,
+        roleTitle: title,
+        seniority: 'کارشناسی',
+        plainExplanation: title
+          ? `معیارها و پرسش‌نامه برای «${title}» بر اساس مهارت‌های تخصصی IT، پایداری زیرساخت و حل مسئله تدوین شد.`
+          : 'معیارها و پرسش‌نامه بر اساس مهارت‌های فنی IT، زیرساخت و عیب‌یابی سامانه‌ها تدوین شد.',
+        thresholds: { interview: 75, review: 50 },
+        criteria: [
+          { id: 'c1', title: 'سوابق فنی و پروژه‌های عملی مرتبط در حوزه IT', weight: 40, mustHave: true },
+          { id: 'c2', title: 'توانایی عیب‌یابی، پشتیبانی سریع و حل مسئله', weight: 25, mustHave: true },
+          { id: 'c3', title: 'آشنایی با شبکه‌های سازمانی، سرورها و پایگاه‌های داده', weight: 20, mustHave: false },
+          { id: 'c4', title: 'مستندسازی فنی، مسئولیت‌پذیری و آموزش‌پذیری', weight: 15, mustHave: false },
+        ],
+        questions: [
+          { id: 'q1', kind: 'knockout', type: 'boolean', label: 'سابقه کار تخصصی و پروژه‌های واقعی در حوزه IT داشته باشد؟', weight: 30, defaultChecked: true },
+          { id: 'q2', kind: 'bonus', type: 'boolean', label: 'مدرک دانشگاهی مرتبط با مهندسی کامپیوتر یا فناوری اطلاعات داشته باشد؟', weight: 15, defaultChecked: false },
+          { id: 'q3', kind: 'bonus', type: 'boolean', label: 'تسلط به زبان انگلیسی تخصصی جهت مستندات و عیب‌یابی داشته باشد؟', weight: 15, defaultChecked: true },
+          {
+            id: 'q-min-exp',
+            kind: 'knockout',
+            type: 'single',
+            label: 'حداقل سابقه کار مورد انتظار',
+            weight: 20,
+            options: [
+              { value: 'any', label: 'فرقی نمی‌کند' },
+              { value: '1', label: 'بالای ۱ سال' },
+              { value: '3', label: 'بالای ۳ سال' },
+              { value: '5', label: 'بالای ۵ سال' },
+            ],
+            defaultValue: '1',
+          },
+          {
+            id: 'q-skills',
+            kind: 'bonus',
+            type: 'multi',
+            label: 'تخصص‌های کلیدی موردنیاز',
+            weight: 20,
+            options: [
+              { value: 'network', label: 'پشتیبانی شبکه و سیستم‌ها (Helpdesk)' },
+              { value: 'dev', label: 'برنامه‌نویسی و توسعه نرم‌افزار' },
+              { value: 'db', label: 'پایگاه داده و کوئری‌نویسی SQL' },
+              { value: 'infra', label: 'مدیریت سرور لینوکس / ویندوز' },
+            ],
+            defaultValues: ['network'],
+          },
+        ],
+      };
+
+    default:
+      return {
+        department: dept.name,
+        departmentId,
+        roleTitle: title,
+        seniority: 'کارشناسی',
+        plainExplanation: title
+          ? `معیارها و پرسش‌نامه ارزیابی برای «${title}» در دپارتمان ${dept.name} آماده شد.`
+          : `معیارها و پرسش‌نامه ارزیابی بر اساس نیازمندی‌های عمومی دپارتمان ${dept.name} آماده شد.`,
+        thresholds: { interview: 75, review: 50 },
+        criteria: [
+          { id: 'c1', title: 'سوابق کاری و تجربیات مرتبط با این موقعیت شغلی', weight: 35, mustHave: true },
+          { id: 'c2', title: 'مهارت‌های تخصصی و کار با ابزارها/سامانه‌های حوزه شغلی', weight: 25, mustHave: true },
+          { id: 'c3', title: 'نظم کاری، مسئولیت‌پذیری و ثبات شغلی', weight: 20, mustHave: false },
+          { id: 'c4', title: 'تحصیلات مرتبط یا مدارک دوره‌های آموزشی تخصصی', weight: 20, mustHave: false },
+        ],
+        questions: [
+          { id: 'q1', kind: 'knockout', type: 'boolean', label: 'سابقه کار مرتبط در موقعیت شغلی مشابه داشته باشد؟', weight: 30, defaultChecked: true },
+          { id: 'q2', kind: 'bonus', type: 'boolean', label: 'مدرک تحصیلی دانشگاهی یا گواهی معتبر مرتبط داشته باشد؟', weight: 15, defaultChecked: true },
+          { id: 'q3', kind: 'bonus', type: 'boolean', label: 'مهارت در نرم‌افزارهای تخصصی و کاربردی (آفیس و سامانه‌ها) داشته باشد؟', weight: 15, defaultChecked: true },
+          {
+            id: 'q-min-exp',
+            kind: 'knockout',
+            type: 'single',
+            label: 'حداقل سابقه کار مورد انتظار',
+            weight: 20,
+            options: [
+              { value: 'any', label: 'فرقی نمی‌کند' },
+              { value: '1', label: 'بالای ۱ سال' },
+              { value: '3', label: 'بالای ۳ سال' },
+              { value: '5', label: 'بالای ۵ سال' },
+            ],
+            defaultValue: '1',
+          },
+          {
+            id: 'q-skills',
+            kind: 'bonus',
+            type: 'multi',
+            label: 'شایستگی‌های رفتاری و فنی',
+            weight: 20,
+            options: [
+              { value: 'teamwork', label: 'کار تیمی و انطباق‌پذیری' },
+              { value: 'reporting', label: 'گزارش‌نویسی و مستندسازی' },
+              { value: 'problem-solving', label: 'حل مسئله و پیگیری امور' },
+              { value: 'communication', label: 'فن بیان و ارتباط موثر' },
+            ],
+            defaultValues: ['teamwork', 'problem-solving'],
+          },
+        ],
+      };
+  }
+}
+
 export async function understandJobV2(
   departmentId: string,
   roleTitle: string,
@@ -366,8 +642,8 @@ ${QUESTION_EXAMPLE_JSON}`;
       lastErr = err;
     }
   }
-  console.error('[understandJobV2] Failed:', lastErr?.status, lastErr?.message);
-  throw new Error(friendlyAiError(lastErr));
+  console.log('[understandJobV2] Prepared questionnaire preset for:', departmentId, roleTitle.trim() || 'default');
+  return buildDefaultUnderstanding(departmentId, roleTitle.trim());
 }
 
 /** Convert GoogleGenAI/network failures into honest, actionable Persian messages. */
@@ -403,7 +679,8 @@ export function buildAnswersBrief(
   answers: ScreeningAnswers
 ): string {
   const lines: string[] = [];
-  for (const q of understanding.questions) {
+  const questions = Array.isArray(understanding?.questions) ? understanding.questions : [];
+  for (const q of questions) {
     const ans = answers[q.id];
     if (q.type === 'boolean') {
       const checked = ans === true || ans === undefined ? q.defaultChecked : Boolean(ans);
@@ -630,7 +907,7 @@ export function finalizeEvaluation(
     .filter((k): k is string => Boolean(k));
 
   // Cross-check knockout questions the user ticked but the model didn't list
-  for (const q of understanding.questions) {
+  for (const q of (understanding?.questions || [])) {
     if (q.kind !== 'knockout' || q.type !== 'boolean') continue;
     const checked = answers[q.id] === undefined ? q.defaultChecked : answers[q.id] === true;
     if (checked && !knockoutMisses.some((m) => m.includes(q.label.slice(0, 10)))) {

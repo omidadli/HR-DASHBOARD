@@ -24,7 +24,7 @@ import type {
   ScreeningAnswers,
 } from './src/types/screening';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const MIME: Record<string, string> = {
   pdf: 'application/pdf',
@@ -356,7 +356,7 @@ async function startServer() {
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`دستیار غربالگری رزومه سیلانه سبز روی پورت ${PORT} آماده است.`);
     const secret = process.env.GEMINI_API_KEY?.trim() || '';
