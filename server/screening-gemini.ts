@@ -1,51 +1,75 @@
+/**
+ * Smart resume screening AI service (Seilaneh Sabz).
+ *
+ * Pass 0  — understandJobV2: department + role title → weighted criteria +
+ *           simple checkbox questionnaire + dynamic thresholds.
+ * Pass 1  — evaluateResumeV2: evidence-based structured evaluation of each resume.
+ * Pass 2  — calibrateV2: relative calibration of top & borderline candidates.
+ * Extra   — draftMessageV2: personalized candidate message drafts.
+ *
+ * Hard rules enforced everywhere:
+ *  - Every strength/weakness/criterion score must carry a real quote as evidence.
+ *  - No fabricated names/numbers: the model may only state what the resume says.
+ *  - When Gemini is unavailable, screening questions FAIL (no fake questions),
+ *    while individual evaluations fall back to a clearly-labeled LOCAL engine.
+ */
 import { GoogleGenAI } from '@google/genai';
-import { JobUnderstanding, CandidateEvaluation } from '../src/types/screening';
+import {
+  AnalysisEngine,
+  BatchStats,
+  CandidateEvaluation,
+  Criterion,
+  CriterionScore,
+  DraftMessage,
+  EvidencePoint,
+  JobUnderstanding,
+  MessageKind,
+  Recommendation,
+  ResumeRecord,
+  ScreeningAnswers,
+  ScreeningQuestion,
+} from '../src/types/screening';
+import { getDepartment } from '../src/lib/departments';
+import { normalizePersianText, toEnglishDigits } from '../src/lib/normalizeFa';
 
 function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  const secret = process.env.GEMINI_API_KEY?.trim();
+  if (!secret) {
     throw new Error('GEMINI_API_KEY environment variable is not configured on the server.');
   }
-  return new GoogleGenAI({ apiKey });
+  // Standard AI Studio API keys start with "AIza". Short-lived ephemeral tokens
+  // (copied from AI Studio's Live/"Connect" demos) start with "AQ." and must be
+  // sent as an Authorization: Bearer token rather than an x-goog-api-key header.
+  if (secret.startsWith('AQ.')) {
+    process.env.GOOGLE_GENAI_ACCESS_TOKEN = secret;
+    return new GoogleGenAI({});
+  }
+  delete process.env.GOOGLE_GENAI_ACCESS_TOKEN;
+  return new GoogleGenAI({ apiKey: secret });
 }
 
 export function resolveGeminiModel(): string {
   const envModel = process.env.GEMINI_MODEL?.trim();
   if (envModel) {
     const clean = envModel.replace(/^models\//, '');
-    if (
-      clean.startsWith('gemini-') &&
-      !clean.includes(' ') &&
-      clean.length < 50 &&
-      clean !== 'gemini-2.5-flash' &&
-      clean !== 'gemini-2.0-flash' &&
-      clean !== 'gemini-3.6-flash'
-    ) {
+    if (clean.startsWith('gemini-') && !clean.includes(' ') && clean.length < 50) {
       return clean;
     }
   }
-  return 'gemini-3.8-flash';
+  return 'gemini-2.5-flash';
 }
 
-/**
- * Robust JSON extraction and sanitizer:
- * Handles markdown code blocks, escaped characters, control characters.
- */
+/** Robust JSON extraction: strips markdown fences, finds outermost JSON, fixes trailing commas/control chars. */
 export function cleanAndParseJson<T>(rawText: string, fallback: T): T {
   if (!rawText) return fallback;
-
   let cleaned = rawText.trim();
-  // Strip code blocks like ```json ... ```
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   }
-
-  // Find outermost JSON object or array
   const firstBrace = cleaned.indexOf('{');
   const firstBracket = cleaned.indexOf('[');
   let startIdx = -1;
   let endIdx = -1;
-
   if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
     startIdx = firstBrace;
     endIdx = cleaned.lastIndexOf('}');
@@ -53,26 +77,19 @@ export function cleanAndParseJson<T>(rawText: string, fallback: T): T {
     startIdx = firstBracket;
     endIdx = cleaned.lastIndexOf(']');
   }
-
   if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
     cleaned = cleaned.substring(startIdx, endIdx + 1);
   }
-
-  // Remove trailing commas before closing braces/brackets
   cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');
-
   try {
     return JSON.parse(cleaned) as T;
-  } catch (err) {
-    // Try sanitizing control characters
+  } catch {
     let sanitized = '';
     let inString = false;
     let isEscaped = false;
-
     for (let i = 0; i < cleaned.length; i++) {
       const ch = cleaned[i];
       const code = ch.charCodeAt(0);
-
       if (inString) {
         if (isEscaped) {
           sanitized += ch;
@@ -83,117 +100,63 @@ export function cleanAndParseJson<T>(rawText: string, fallback: T): T {
         } else if (ch === '"') {
           sanitized += ch;
           inString = false;
-        } else if (ch === '\n') {
-          sanitized += '\\n';
-        } else if (ch === '\r') {
-          sanitized += '\\r';
-        } else if (ch === '\t') {
-          sanitized += '\\t';
-        } else if (code < 32) {
-          sanitized += '\\u' + code.toString(16).padStart(4, '0');
-        } else {
-          sanitized += ch;
-        }
+        } else if (ch === '\n') sanitized += '\\n';
+        else if (ch === '\r') sanitized += '\\r';
+        else if (ch === '\t') sanitized += '\\t';
+        else if (code < 32) sanitized += '\\u' + code.toString(16).padStart(4, '0');
+        else sanitized += ch;
       } else {
         if (ch === '"') inString = true;
         sanitized += ch;
       }
     }
-
     try {
       return JSON.parse(sanitized) as T;
-    } catch (secondErr) {
-      console.error('Failed to parse JSON response from Gemini:', secondErr, 'Raw:', rawText.slice(0, 300));
+    } catch (err) {
+      console.error('Failed to parse JSON from Gemini:', err, 'Raw head:', rawText.slice(0, 300));
       return fallback;
     }
   }
 }
 
-/**
- * Checks if an error is temporary/retryable (rate limits, 503 high demand spikes, network disconnects)
- */
-function isRetryableError(error: any): boolean {
-  const status = error?.status || error?.code;
-  const msg = (error?.message || '').toLowerCase();
-  return (
-    status === 503 ||
-    status === 429 ||
-    status === 500 ||
-    status === 502 ||
-    status === 504 ||
-    msg.includes('503') ||
-    msg.includes('429') ||
-    msg.includes('unavailable') ||
-    msg.includes('high demand') ||
-    msg.includes('resource_exhausted') ||
-    msg.includes('quota exceeded') ||
-    msg.includes('overloaded') ||
-    msg.includes('temporarily unavailable') ||
-    msg.includes('spikes in demand') ||
-    msg.includes('not_found') ||
-    error?.code === 'ECONNRESET' ||
-    error?.code === 'ETIMEDOUT' ||
-    msg.includes('fetch failed')
-  );
-}
+// ---------------- Circuit breaker & model failover ----------------
 
-/**
- * Generate content with multi-model fallback and backoff:
- * Tries the primary model, and if it experiences high demand (503) or rate limits (429),
- * automatically retries or fails over to alternative active models.
- */
-// Circuit breaker state for external Gemini API calls
 let circuitOpenUntil = 0;
 let circuitConsecutiveFailures = 0;
 
 export function isGeminiCircuitOpen(): boolean {
   return Date.now() < circuitOpenUntil;
 }
-
 export function recordGeminiSuccess() {
   circuitConsecutiveFailures = 0;
   circuitOpenUntil = 0;
 }
-
 export function recordGeminiFailure(isQuota: boolean, isHighDemand: boolean) {
   circuitConsecutiveFailures++;
-  // If quota exhausted (429), cool down for 2 minutes to prevent hammering
-  // If high demand (503), cool down for 45 seconds
   const cooldownMs = isQuota ? 120_000 : isHighDemand ? 45_000 : 30_000;
   circuitOpenUntil = Date.now() + cooldownMs;
   console.log(
-    `[Gemini Circuit Breaker] Cooldown active for ${Math.round(cooldownMs / 1000)}s (${
-      isQuota ? '429 Quota Exceeded' : isHighDemand ? '503 High Demand' : 'Service Busy'
-    }). Smoothly switching to resilient analyzer.`
+    `[Gemini] Circuit open for ${Math.round(cooldownMs / 1000)}s (` +
+      `${isQuota ? '429 quota' : isHighDemand ? '503 busy' : 'error'}).`
   );
 }
 
-/**
- * Generate content with multi-model fallback and circuit breaker.
- * When the API is in high demand (503) or rate-limited (429), it trips the circuit breaker
- * to avoid stalls and immediately activates high-accuracy resilient local evaluation.
- */
 async function generateWithFallback(
   prompt: string,
-  config?: { temperature?: number; responseMimeType?: string }
+  config?: { temperature?: number; responseMimeType?: string; timeoutMs?: number }
 ): Promise<string> {
-  if (isGeminiCircuitOpen()) {
-    throw new Error('GEMINI_CIRCUIT_OPEN');
-  }
-
+  if (isGeminiCircuitOpen()) throw new Error('GEMINI_CIRCUIT_OPEN');
   const client = getGeminiClient();
-  const primaryModel = resolveGeminiModel();
-
-  // Candidate models to try in sequence
+  const primary = resolveGeminiModel();
   const candidateModels = Array.from(
-    new Set([primaryModel, 'gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash'])
-  ).filter((m) => m !== 'gemini-3.6-flash' && m !== 'gemini-2.5-flash');
+    new Set([primary, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'])
+  );
+  const timeoutMs = config?.timeoutMs ?? 20_000;
 
   let lastError: any = null;
-
   for (const model of candidateModels) {
     try {
-      const callPromise = client.models.generateContent({
+      const call = client.models.generateContent({
         model,
         contents: prompt,
         config: {
@@ -201,13 +164,10 @@ async function generateWithFallback(
           responseMimeType: config?.responseMimeType ?? 'application/json',
         },
       });
-
-      // 7s timeout safeguard so batch screening never hangs
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Timeout after 7s on ${model}`)), 7000)
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms on ${model}`)), timeoutMs)
       );
-
-      const res = await Promise.race([callPromise, timeoutPromise]);
+      const res = await Promise.race([call, timeout]);
       if (res.text) {
         recordGeminiSuccess();
         return res.text;
@@ -215,490 +175,771 @@ async function generateWithFallback(
     } catch (err: any) {
       lastError = err;
       const msg = String(err?.message || '');
-      const isQuota =
-        err?.status === 429 ||
-        msg.includes('429') ||
-        msg.includes('quota') ||
-        msg.includes('RESOURCE_EXHAUSTED');
-      const isHighDemand =
-        err?.status === 503 ||
-        msg.includes('503') ||
-        msg.includes('high demand') ||
-        msg.includes('UNAVAILABLE');
-
+      const isQuota = err?.status === 429 || /429|quota|RESOURCE_EXHAUSTED/i.test(msg);
+      const isHighDemand = err?.status === 503 || /503|UNAVAILABLE|overloaded|high demand/i.test(msg);
       if (isQuota || isHighDemand) {
         recordGeminiFailure(isQuota, isHighDemand);
-        break; // Trip circuit breaker immediately to prevent stalling subsequent candidates
+        break;
       }
     }
   }
-
   throw lastError || new Error('All Gemini models are temporarily unavailable.');
 }
 
-/**
- * PASS 0: Understand the Job Description
- * Auto-detects department, seniority, weighted criteria (sum = 100), dynamic thresholds, and a plain 1-2 sentence explanation.
- */
-export async function understandJob(jobDescription: string): Promise<JobUnderstanding> {
-  const prompt = `تو یک کارشناس ارشد تحلیل شغل و استخدام هستی. متن زیر شرح یک موقعیت شغلی (به زبان آزاد) است.
-هدف تو در این مرحله ("پاس صفر") این است که این شغل را دقیق و هوشمندانه متوجه شوی.
+// ================================================================
+// PASS 0 — Understand the job + generate the checkbox questionnaire
+// ================================================================
 
-متن شغل:
-"""
-${jobDescription.trim()}
-"""
-
-دستورالعمل‌ها:
-۱. دپارتمان/حوزه شغل را تعیین کن (مثال‌ها: فروش و بازاریابی، فنی و مهندسی نرم‌افزار، حسابداری و امور مالی، تولید و کارخانه، منابع انسانی، لجستیک و زنجیره تامین، پشتیبانی مشتریان، مدیریت و...).
-۲. سطح ارشدیت و حساسیت نقش را تعیین کن (کارآموزی، کارشناسی، کارشناسی ارشد، سرپرستی، مدیریت، ارشد اجرایی).
-۳. ۳ تا ۵ شاخص ارزیابی متناسب با همان دپارتمان تعریف کن که جمع وزن‌های آنها دقیقاً ۱۰۰ باشد:
-   - فروش: وزن بالا برای فن بیان، سابقه فروش، فنون مذاکره و شبکه ارتباطی.
-   - فنی/مهندسی: وزن بالا برای مهارت‌های تخصصی، پشته فنی، پروژه‌ها و حل مسئله.
-   - مالی: وزن بالا برای دقت محاسباتی، نرم‌افزارهای مالی، تسلط به قوانین مالیاتی و بیمه و مدارک تحصیلی.
-   - تولید: وزن بالا برای سابقه کارگاهی، تسلط به استانداردها، ایمنی و شیفت کاری.
-   - منابع انسانی: وزن بالا برای جذب و استخدام، قوانین کار، ارزیابی عملکرد و هوش هیجانی.
-   حداقل ۱ یا ۲ شاخص کلیدی را mustHave: true بگذار.
-۴. آستانه‌های داینامیک این شغل را با این گاردریل دقیق تنظیم کن:
-   - آستانه "مصاحبه شود" (interview) بین ۷۰ تا ۸۵ باشد (برای نقش‌های حساس و مدیریتی نزدیک ۸۵، برای نقش‌های عمومی نزدیک ۷۰).
-   - آستانه "بررسی بیشتر" (review) بین ۴۵ تا ۶۰ باشد.
-۵. یک توضیح بسیار ساده، خودمانی و غیرفنی (plainExplanation) در ۱ الی ۲ جمله بنویس که در کارت "هوش مصنوعی این شغل رو اینطوری فهمید" برای یک مدیر یا کاربر عادی نمایش داده شود. هیچ عدد، وزن، آستانه یا اصطلاح فنی در آن نباشد! مثلاً:
-   "این یه شغل فروشه؛ پس بیشتر از همه به فن بیان و سابقه فروش امتیاز دادم و چون سمت حساسیه، با دقت و سخت‌گیری بررسی کردم."
-
-فقط و فقط یک آبجکت JSON معتبر با این فرمت خروجی بده بدون هیچ توضیح اضافه:
-{
-  "department": "نام دپارتمان",
-  "seniority": "سطح ارشدیت",
-  "thresholds": {
-    "interview": 75,
-    "review": 50
-  },
+const QUESTION_EXAMPLE_JSON = `{
+  "department": "فروش و پخش مویرگی",
+  "roleTitle": "کارشناس فروش حضوری",
+  "seniority": "کارشناسی",
+  "plainExplanation": "این شغل یه کار میدانی فروشه؛ پس سابقه فروش حضوری، فن بیان و آمادگی ماموریت رو خیلی پررنگ کردم و چون کارش تارگت و پورسانه، سابقه کار با عدد و تارگت هم مهمه.",
+  "thresholds": { "interview": 75, "review": 50 },
   "criteria": [
-    { "title": "عنوان شاخص", "weight": 40, "mustHave": true, "keywords": ["کلمه۱", "کلمه۲"] }
+    { "id": "c1", "title": "سابقه و نتایج فروش میدانی", "weight": 35, "mustHave": true },
+    { "id": "c2", "title": "فن بیان، مذاکره و روابط عمومی", "weight": 25, "mustHave": true },
+    { "id": "c3", "title": "آشنایی با پخش مویرگی و صنعت FMCG", "weight": 15, "mustHave": false },
+    { "id": "c4", "title": "آمادگی ماموریت و تردد میدانی", "weight": 15, "mustHave": true },
+    { "id": "c5", "title": "پایداری و ثبات شغلی", "weight": 10, "mustHave": false }
   ],
-  "plainExplanation": "یک یا دو جمله کاملاً ساده و غیرفنی"
+  "questions": [
+    { "id": "q1", "kind": "knockout", "type": "boolean", "label": "سابقه فروش حضوری یا میدانی داشته باشد", "weight": 30, "defaultChecked": true },
+    { "id": "q2", "kind": "knockout", "type": "boolean", "label": "آماده ماموریت‌های درون‌شهری و جاده‌ای باشد", "weight": 20, "defaultChecked": true },
+    { "id": "q3", "kind": "bonus", "type": "boolean", "label": "با نرم‌افزار CRM کار کرده باشد", "weight": 10, "defaultChecked": false },
+    { "id": "q4", "kind": "bonus", "type": "boolean", "label": "سابقه کار پورسانی و تارگت داشته باشد", "weight": 15, "defaultChecked": true },
+    { "id": "q5", "kind": "knockout", "type": "single", "label": "حداقل سابقه کار مورد انتظار", "weight": 15,
+      "options": [ {"value":"any","label":"فرقی نمی‌کند"}, {"value":"1","label":"بالای ۱ سال"}, {"value":"3","label":"بالای ۳ سال"}, {"value":"5","label":"بالای ۵ سال"} ],
+      "defaultValue": "1" },
+    { "id": "q6", "kind": "bonus", "type": "multi", "label": "کدام مهارت‌ها برایت مهم‌تر است؟", "weight": 10,
+      "options": [ {"value":"nego","label":"مذاکره و فن بیان"}, {"value":"merch","label":"مرچندایزینگ و چیدمان فروشگاهی"}, {"value":"fmcg","label":"آشنایی با پخش مویرگی FMCG"}, {"value":"excel","label":"اکسل و گزارش فروش"} ],
+      "defaultValues": ["nego","fmcg"] }
+  ]
 }`;
 
-  let response = '';
+function repairUnderstanding(raw: any, departmentId: string, roleTitle: string): JobUnderstanding | null {
   try {
-    response = await generateWithFallback(prompt, {
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-    });
-  } catch (err: any) {
-    if (err?.message !== 'GEMINI_CIRCUIT_OPEN') {
-      console.log('[understandJob] Model busy or rate-limited; smoothly applied intelligent heuristic analyzer.');
+    const dept = getDepartment(departmentId);
+    if (!raw || !Array.isArray(raw.criteria) || raw.criteria.length < 3) return null;
+    if (!Array.isArray(raw.questions) || raw.questions.length < 3) return null;
+
+    // Normalize criteria: ids, integer weights summing to 100, at least one mustHave
+    const criteria: Criterion[] = raw.criteria.slice(0, 6).map((c: any, i: number) => ({
+      id: typeof c.id === 'string' && c.id ? c.id : `c${i + 1}`,
+      title: String(c.title || '').trim(),
+      weight: Math.max(1, Math.round(Number(c.weight) || 0)),
+      mustHave: Boolean(c.mustHave),
+    }));
+    if (criteria.some((c) => !c.title)) return null;
+    if (!criteria.some((c) => c.mustHave)) criteria[0].mustHave = true;
+    const totalW = criteria.reduce((s, c) => s + c.weight, 0);
+    if (totalW <= 0) return null;
+    // Scale weights to sum 100
+    let scale = 100 / totalW;
+    let weights = criteria.map((c) => Math.max(1, Math.round(c.weight * scale)));
+    let diff = 100 - weights.reduce((s, w) => s + w, 0);
+    let guard = 0;
+    while (diff !== 0 && guard++ < 100) {
+      const idx = weights.indexOf(Math.max(...weights));
+      weights[idx] += diff > 0 ? 1 : -1;
+      if (weights[idx] < 1) weights[idx] = 1;
+      diff = 100 - weights.reduce((s, w) => s + w, 0);
     }
-    return generateHeuristicJobUnderstanding(jobDescription);
-  }
+    criteria.forEach((c, i) => (c.weight = weights[i]));
 
-  const fallback = generateHeuristicJobUnderstanding(jobDescription);
-  const parsed = cleanAndParseJson<JobUnderstanding>(response, fallback);
-
-  // Guardrail verification
-  let interview = Number(parsed.thresholds?.interview) || 75;
-  let review = Number(parsed.thresholds?.review) || 50;
-  if (interview < 70) interview = 70;
-  if (interview > 85) interview = 85;
-  if (review < 45) review = 45;
-  if (review > 60) review = 60;
-  if (review >= interview) review = interview - 15;
-
-  parsed.thresholds = { interview, review };
-  return parsed;
-}
-
-/**
- * PASS 1: Individual Resume Evaluation
- * Step-by-step reasoning, real quotes for evidence, ceiling rules, and no fake data.
- */
-export async function evaluateResume(
-  jobDescription: string,
-  jobUnderstanding: JobUnderstanding,
-  resumeText: string,
-  fileName: string
-): Promise<CandidateEvaluation> {
-  // Safety check: if text is empty or virtually non-existent, do not score
-  if (!resumeText || resumeText.trim().length < 50) {
-    return {
-      candidateName: null,
-      score: 0,
-      summary: 'متن استخراج‌شده از رزومه کمتر از حد استاندارد برای قضاوت تخصصی است.',
-      strengths: [],
-      weaknesses: [{ point: 'فایل بدون محتوای متنی معتبر', evidence: 'حجم متن استخراج شده زیر ۵۰ کاراکتر است' }],
-      recommendation: 'REJECT',
-      insufficientInfo: true,
-      irrelevant: false,
-    };
-  }
-
-  const criteriaListStr = (jobUnderstanding.criteria || [])
-    .map((c, i) => `${i + 1}. ${c.title} (وزن: ${c.weight}٪ ${c.mustHave ? '— الزامی/Must-Have' : ''})`)
-    .join('\n');
-
-  const prompt = `تو یک کارشناس ارشد و بسیار دقیق غربالگری رزومه هستی. وظیفه تو مقایسه موشکافانه رزومه ارسالی با شرایط و شاخص‌های تعیین‌شده برای این موقعیت شغلی است.
-
-موقعیت شغلی:
-دپارتمان: ${jobUnderstanding.department}
-ارشدیت: ${jobUnderstanding.seniority}
-شرح شغل:
-${jobDescription.trim()}
-
-شاخص‌های امتیازدهی:
-${criteriaListStr}
-
-آستانه‌های این شغل:
-- بالای ${jobUnderstanding.thresholds.interview} = مصاحبه شود (INTERVIEW)
-- بین ${jobUnderstanding.thresholds.review} و ${jobUnderstanding.thresholds.interview} = بررسی بیشتر (REVIEW)
-- زیر ${jobUnderstanding.thresholds.review} = رد شود (REJECT)
-
-نام فایل رزومه: ${fileName}
-متن رزومه کاندید:
-"""
-${resumeText.slice(0, 7500).trim()}
-"""
-
-قوانین حیاتی و نقض‌ناپذیر:
-۱. نام کاندید (candidateName): فقط و فقط اگر صریحاً و با اطمینان نام کاندید در متن رزومه آمده، استخراج کن. هرگز حدس نزن و از نام فایل حدس نزن. اگر نبود، مقدار null برگردان.
-۲. شاهدمتنی (evidence) اجباری: تک‌تک نقاط قوت (strengths) و کمبودها (weaknesses) باید یک "نقل‌قول مستقیم کوتاه واقعی" از متن رزومه داشته باشند (یا در مورد کمبود، اشاره دقیق به غیبت آن در متن). ادعای بدون شاهد متنی به شدت ممنوع است! حداکثر ۴ نقطه قوت و حداکثر ۴ کمبود بنویس.
-۳. قوانین سقفی ضد بادکردن نمره:
-   - اگر رزومه کاملاً به دپارتمان یا این شغل نامرتبط است (مثلاً برای شغل فروش، رزومه کارآموز آزمایشگاه فرستاده شده): امتیاز زیر ۳۰ بده، irrelevant: true بگذار، و توصیه REJECT کن با توضیح صادقانه.
-   - اگر حداقل یکی از شاخص‌های الزامی (mustHave: true) در رزومه اصلاً وجود ندارد یا کاندید فاقد آن است، سقف امتیاز ۴۵ است.
-   - اگر رزومه دارای اطلاعات ناچیز یا ناکافی برای قضاوت است، insufficientInfo: true بگذار و امتیازسازی فیک نکن.
-۴. خلاصه (summary): ۲ تا ۳ جمله صریح، روان و مستدل به زبان فارسی بنویس که دقیقاً بگوید چرا این امتیاز به کاندید داده شده است.
-۵. توصیه نهایی (recommendation): دقیقاً بر اساس آستانه‌های داده‌شده یکی از مقادیر INTERVIEW یا REVIEW یا REJECT را انتخاب کن.
-
-خروجی باید صرفاً یک JSON با ساختار زیر باشد بدون کدفنس اضافی:
-{
-  "candidateName": "نام کاندید یا null",
-  "score": 80,
-  "summary": "خلاصه فارسی دلیل امتیاز...",
-  "strengths": [
-    { "point": "عنوان نقطه قوت", "evidence": "نقل‌قول کوتاه از متن رزومه" }
-  ],
-  "weaknesses": [
-    { "point": "عنوان کمبود", "evidence": "توضیح یا اشاره به نبود آن در رزومه" }
-  ],
-  "recommendation": "INTERVIEW",
-  "insufficientInfo": false,
-  "irrelevant": false
-}`;
-
-  let response = '';
-  try {
-    response = await generateWithFallback(prompt, {
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-    });
-  } catch (err: any) {
-    if (err?.message !== 'GEMINI_CIRCUIT_OPEN') {
-      console.log(`[evaluateResume] Model busy/cooldown for «${fileName}», applied resilient candidate evaluation.`);
-    }
-    return generateFallbackCandidateEvaluation(jobUnderstanding, resumeText, fileName);
-  }
-
-  const fallback: CandidateEvaluation = generateFallbackCandidateEvaluation(jobUnderstanding, resumeText, fileName);
-
-  const parsed = cleanAndParseJson<CandidateEvaluation>(response, fallback);
-
-  // Ensure score is clamped 0-100
-  let score = Math.round(Number(parsed.score) || 0);
-  if (score < 0) score = 0;
-  if (score > 100) score = 100;
-  parsed.score = score;
-
-  // Align recommendation with dynamic thresholds
-  if (parsed.insufficientInfo || parsed.irrelevant) {
-    if (parsed.irrelevant) parsed.recommendation = 'REJECT';
-  } else {
-    if (score >= jobUnderstanding.thresholds.interview) {
-      parsed.recommendation = 'INTERVIEW';
-    } else if (score >= jobUnderstanding.thresholds.review) {
-      parsed.recommendation = 'REVIEW';
-    } else {
-      parsed.recommendation = 'REJECT';
-    }
-  }
-
-  // Ensure arrays
-  if (!Array.isArray(parsed.strengths)) parsed.strengths = [];
-  if (!Array.isArray(parsed.weaknesses)) parsed.weaknesses = [];
-
-  return parsed;
-}
-
-/**
- * PASS 2: Scalable Calibration
- * Only calibrates top 15 candidates and borderline cases (±5 points around thresholds).
- * Max adjustment is bounded to ±10 points.
- */
-export async function calibrateTopAndBorderline(
-  jobUnderstanding: JobUnderstanding,
-  candidatesToCalibrate: Array<{ id: string; name: string; score: number; summary: string }>
-): Promise<Record<string, number>> {
-  if (!candidatesToCalibrate || candidatesToCalibrate.length === 0) {
-    return {};
-  }
-
-  const prompt = `تو مسئول کالیبراسیون نهایی امتیازات در غربالگری رزومه‌ها هستی.
-آستانه مصاحبه این شغل: ${jobUnderstanding.thresholds.interview}
-آستانه بررسی بیشتر این شغل: ${jobUnderstanding.thresholds.review}
-
-لیست زیر شامل کاندیداهای برتر یا موارد لبه‌مرزی است:
-${JSON.stringify(candidatesToCalibrate, null, 2)}
-
-لطفاً این کاندیداها را با یکدیگر مقایسه کن تا عدالت نسبی بین افراد برقرار باشد.
-برای هر فرد، امتیاز تعدیل‌شده را مشخص کن.
-قوانین:
-۱. حداکثر تغییر برای هر شخص مثبت یا منفی ۱۰ نمره است (نه بیشتر).
-۲. اگر امتیازی منصفانه است، بدون تغییر نگه دار.
-
-خروجی فقط یک JSON با نگاشت id به امتیاز نهایی باشد:
-{
-  "adjustments": {
-    "شناسه_۱": 82,
-    "شناسه_۲": 74
-  }
-}`;
-
-  try {
-    const response = await generateWithFallback(prompt, {
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-    });
-
-    const parsed = cleanAndParseJson<{ adjustments: Record<string, number> }>(response, { adjustments: {} });
-    const adjustments: Record<string, number> = {};
-
-    if (parsed && parsed.adjustments) {
-      for (const [id, adjustedScore] of Object.entries(parsed.adjustments)) {
-        const orig = candidatesToCalibrate.find((c) => c.id === id);
-        if (orig) {
-          const origScore = orig.score;
-          let clamped = Math.round(Number(adjustedScore) || origScore);
-          // Bound to max ±10 from original
-          if (clamped > origScore + 10) clamped = origScore + 10;
-          if (clamped < origScore - 10) clamped = origScore - 10;
-          if (clamped < 0) clamped = 0;
-          if (clamped > 100) clamped = 100;
-          adjustments[id] = clamped;
-        }
+    // Normalize questions (5-8 questions), booleans dominate
+    const questions: ScreeningQuestion[] = [];
+    let qIdx = 0;
+    for (const q of raw.questions.slice(0, 8)) {
+      if (!q || typeof q.label !== 'string' || !q.label.trim()) continue;
+      const id = typeof q.id === 'string' && q.id ? q.id : `q${++qIdx}`;
+      const kind: 'knockout' | 'bonus' = q.kind === 'bonus' ? 'bonus' : 'knockout';
+      const weight = Math.max(1, Math.round(Number(q.weight) || 10));
+      if (q.type === 'single' && Array.isArray(q.options) && q.options.length >= 2) {
+        questions.push({
+          id, kind, type: 'single', label: q.label.trim(), weight,
+          options: q.options.slice(0, 6).map((o: any, i: number) => ({
+            value: String(o.value ?? i), label: String(o.label ?? o.value ?? '').trim(),
+          })).filter((o: { label: string }) => o.label),
+          defaultValue: String(q.defaultValue ?? q.options[0]?.value ?? 'any'),
+        });
+      } else if (q.type === 'multi' && Array.isArray(q.options) && q.options.length >= 2) {
+        const options = q.options.slice(0, 8).map((o: any, i: number) => ({
+          value: String(o.value ?? i), label: String(o.label ?? o.value ?? '').trim(),
+        })).filter((o: { label: string }) => o.label);
+        const defs = new Set(
+          (Array.isArray(q.defaultValues) ? q.defaultValues : []).map((v: any) => String(v))
+        );
+        questions.push({
+          id, kind, type: 'multi', label: q.label.trim(), weight, options,
+          defaultValues: options.map((o: { value: string }) => o.value).filter((v: string) => defs.has(v)),
+        });
+      } else {
+        questions.push({
+          id, kind, type: 'boolean', label: q.label.trim(), weight,
+          defaultChecked: Boolean(q.defaultChecked),
+        });
       }
     }
-    return adjustments;
-  } catch (err: any) {
-    if (err?.message !== 'GEMINI_CIRCUIT_OPEN') {
-      console.log('[calibrateTopAndBorderline] Calibration pass skipped (service busy), preserving original scores.');
+    if (questions.length < 3) return null;
+    // Ensure a minimum-experience single-choice question exists
+    if (!questions.some((q) => q.type === 'single')) {
+      questions.push({
+        id: 'q-min-exp', kind: 'knockout', type: 'single', weight: 10,
+        label: 'حداقل سابقه کار مورد انتظار',
+        options: [
+          { value: 'any', label: 'فرقی نمی‌کند' },
+          { value: '1', label: 'بالای ۱ سال' },
+          { value: '3', label: 'بالای ۳ سال' },
+          { value: '5', label: 'بالای ۵ سال' },
+        ],
+        defaultValue: 'any',
+      });
     }
-    return {};
+
+    let interview = Math.round(Number(raw.thresholds?.interview) || 75);
+    let review = Math.round(Number(raw.thresholds?.review) || 50);
+    interview = Math.min(85, Math.max(70, interview));
+    review = Math.min(60, Math.max(45, review));
+    if (review >= interview) review = interview - 15;
+
+    return {
+      department: dept.name,
+      departmentId,
+      roleTitle: roleTitle || '',
+      seniority: String(raw.seniority || 'کارشناسی').trim(),
+      plainExplanation:
+        String(raw.plainExplanation || '').trim() ||
+        'معیارهای این شغل تحلیل شد و رزومه‌ها بر اساس تطابق سوابق و مهارت‌ها سنجیده می‌شوند.',
+      thresholds: { interview, review },
+      criteria,
+      questions,
+    };
+  } catch {
+    return null;
   }
 }
 
-/**
- * Robust heuristic job analyzer used when external AI models are temporarily busy or unavailable.
- */
-export function generateHeuristicJobUnderstanding(jobDescription: string): JobUnderstanding {
-  const text = (jobDescription || '').toLowerCase();
+export async function understandJobV2(
+  departmentId: string,
+  roleTitle: string,
+  extraNotes?: string
+): Promise<JobUnderstanding> {
+  const dept = getDepartment(departmentId);
+  const prompt = `تو یک کارشناس ارشد تحلیل شغل و استخدام در هلدینگ تولیدی «سیلانه سبز» هستی.
+قراره برای یک موقعیت شغلی، معیارهای ارزیابی و چند سوال خیلی ساده (چک‌باکسی) برای کاربر منابع انسانی بسازی.
 
-  let department = 'عمومی و تخصصی';
-  let plainExplanation = 'این موقعیت شغلی تحلیل شد و ارزیابی بر اساس تطابق مهارت‌های کلیدی و سوابق کاری مرتبط انجام می‌شود.';
-  let criteria = [
-    { title: 'سابقه کار مرتبط و تجربه عملی', weight: 40, mustHave: true, keywords: ['سابقه', 'تجربه', 'سال'] },
-    { title: 'مهارت‌های تخصصی و اجرایی', weight: 35, mustHave: true, keywords: ['مهارت', 'تخصص', 'مسلط'] },
-    { title: 'تحصیلات و مدارک تخصصی', weight: 15, mustHave: false, keywords: ['مدرک', 'کارشناسی', 'دانشگاه'] },
-    { title: 'روابط عمومی و روحیه کار تیمی', weight: 10, mustHave: false, keywords: ['تیم', 'همکاری', 'پیگیری'] },
-  ];
+دپارتمان انتخاب‌شده: ${dept.name}
+حوزه این دپارتمان: ${dept.hint}
+عنوان شغلی (ممکن است خالی باشد): ${roleTitle.trim() || '—'}
+${extraNotes?.trim() ? `توضیحات تکمیلی کاربر:\n"""\n${extraNotes.trim()}\n"""` : ''}
 
-  if (text.includes('فروش') || text.includes('مارکتینگ') || text.includes('بازاریاب') || text.includes('مذاکره')) {
-    department = 'فروش و بازاریابی';
-    plainExplanation = 'این یک موقعیت فروش و بازاریابی است؛ به فن بیان، سابقه فروش موفق و تعامل با مشتریان بالاترین اهمیت داده شد.';
-    criteria = [
-      { title: 'مهارت‌های مذاکره و فروش موثر', weight: 45, mustHave: true, keywords: ['فروش', 'مذاکره', 'مشتری', 'تارگت'] },
-      { title: 'سابقه کار مرتبط در بازاریابی و فروش', weight: 30, mustHave: true, keywords: ['سابقه', 'تجربه', 'قرارداد'] },
-      { title: 'تسلط به ابزارهای CRM و گزارش‌دهی', weight: 15, mustHave: false, keywords: ['crm', 'گزارش', 'اکسل'] },
-      { title: 'روابط عمومی قوی و روحیه تیمی', weight: 10, mustHave: false, keywords: ['روابط عمومی', 'انرژی', 'پیگیری'] },
-    ];
-  } else if (
-    text.includes('برنامه نویس') ||
-    text.includes('توسعه دهنده') ||
-    text.includes('نرم افزار') ||
-    text.includes('react') ||
-    text.includes('python') ||
-    text.includes('فرانت') ||
-    text.includes('بک اند') ||
-    text.includes('جاوا')
-  ) {
-    department = 'فنی و مهندسی نرم‌افزار';
-    plainExplanation = 'این یک موقعیت فنی و مهندسی است؛ بیشترین اولویت به دانش کدنویسی، پشته فناوری‌ها و پروژه‌های عملی اختصاص یافت.';
-    criteria = [
-      { title: 'تسلط به پشته فنی و زبان‌های تخصصی', weight: 45, mustHave: true, keywords: ['توسعه', 'کدنویسی', 'تخصصی', 'فنی', 'نرم افزار'] },
-      { title: 'پروژه‌های عملی و تجربه کاری معتبر', weight: 30, mustHave: true, keywords: ['پروژه', 'گیت', 'github', 'تجربه عملی'] },
-      { title: 'معماری نرم‌افزار و حل مسئله', weight: 15, mustHave: false, keywords: ['معماری', 'الگوریتم', 'clean code', 'چابک'] },
-      { title: 'مستندسازی و کار تیمی', weight: 10, mustHave: false, keywords: ['تیم', 'git', 'مستند'] },
-    ];
-  } else if (text.includes('حسابدار') || text.includes('مالی') || text.includes('مالیات') || text.includes('دفاتر')) {
-    department = 'حسابداری و امور مالی';
-    plainExplanation = 'این یک موقعیت مالی است؛ تسلط بر قوانین مالیاتی، نرم‌افزارهای حسابداری و ثبت اسناد اولویت اصلی است.';
-    criteria = [
-      { title: 'تسلط بر نرم‌افزارهای مالی و اکسل پیشرفته', weight: 40, mustHave: true, keywords: ['سپیدار', 'همکاران', 'اکسل', 'حسابداری'] },
-      { title: 'آشنایی با قوانین مالیات و بیمه و گزارش‌های فصلی', weight: 35, mustHave: true, keywords: ['مالیات', 'بیمه', 'ارزش افزوده', 'ماده ۱۶۹'] },
-      { title: 'سابقه ثبت دفاتر و بستن حساب‌ها', weight: 15, mustHave: false, keywords: ['دفاتر', 'بستن حساب', 'سند'] },
-      { title: 'دقت محاسباتی و تحصیلات حسابداری', weight: 10, mustHave: false, keywords: ['کارشناسی', 'دقت', 'نظم'] },
-    ];
+کارها:
+۱. «سطح ارشدیت» نقش را در یک عبارت کوتاه فارسی بنویس (کارآموزی، کارشناسی، کارشناس ارشد، سرپرستی، مدیریت).
+۲. بین ۴ تا ۵ «شاخص ارزیابی وزن‌دار» بساز؛ جمع وزن‌ها دقیقاً ۱۰۰ شود؛ حداقل یکی و حداکثر دوتایش mustHave: true باشد. شاخص‌ها مخصوص همین دپارتمان و همین شغل باشند، نه کلی و تکراری.
+۳. بین ۵ تا ۸ «سوال خیلی ساده» بساز که یک کاربر غیرفنی فقط با تیک‌زدن جواب بدهد:
+   - بیشتر سوال‌ها type=boolean با پاسخ بله/خیر؛ label به زبان محاوره‌ای و کاملاً ساده، مثلاً «سابقه کار کارگاهی و خط تولید داشته باشد؟»، «آماده کار در شیفت چرخشی باشد؟»، «با نرم‌افزار سپیدار کار کرده باشد؟»، «مدرک فنی مرتبط داشته باشد؟».
+   - دقیقاً یک سوال type=single با id مثل q-exp برای «حداقل سابقه کار مورد انتظار» با گزینه‌های any/1/3/5.
+   - حداکثر دو سوال type=multi برای مهارت‌های کلیدی، با ۴ تا ۶ گزینه کوتاه.
+   - kind: شرط‌هایی که نبودشان عملاً رزومه را از رقابت خارج می‌کند «knockout»؛ بقیه «bonus».
+   - defaultChecked / defaultValue / defaultValues را طوری تنظیم کن که برای حالت معمول همین شغل، کمترین تغییر لازم باشد (پیش‌فرض منطقی تیک خورده).
+۴. آستانه‌ها: interview بین ۷۰ تا ۸۵ (نقش مدیریتی/حساس نزدیک ۸۵، نقش‌های عمومی نزدیک ۷۰)، review بین ۴۵ تا ۶۰ و همیشه حداقل ۱۵ واحد کمتر از interview.
+۵. plainExplanation: یک یا دو جمله خیلی ساده و خودمانی و بدون هیچ عدد/وزن/اصطلاح فنی که بگویی برای این شغل چه چیزهایی برایت مهم بود.
+
+فقط و فقط JSON معتبر، دقیقاً با همین ساختار (نمونه از یک شغل دیگر، فقط برای فهم فرم):
+${QUESTION_EXAMPLE_JSON}`;
+
+  const callAndRepair = async (): Promise<JobUnderstanding | null> => {
+    const raw = await generateWithFallback(prompt, { temperature: 0.2, timeoutMs: 20_000 });
+    const parsed = cleanAndParseJson<any>(raw, null);
+    if (!parsed) return null;
+    return repairUnderstanding(parsed, departmentId, roleTitle.trim());
+  };
+
+  let lastErr: any = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const understanding = await callAndRepair();
+      if (understanding) return understanding;
+      lastErr = new Error('malformed');
+    } catch (err: any) {
+      lastErr = err;
+    }
   }
+  console.error('[understandJobV2] Failed:', lastErr?.status, lastErr?.message);
+  throw new Error(friendlyAiError(lastErr));
+}
 
-  let seniority = 'کارشناسی';
-  let interview = 75;
-  let review = 50;
-  if (text.includes('مدیر') || text.includes('مدیریت')) {
-    seniority = 'مدیریت';
-    interview = 80;
-    review = 55;
-  } else if (text.includes('سرپرست')) {
-    seniority = 'سرپرستی';
-    interview = 78;
-    review = 52;
-  } else if (text.includes('ارشد') || text.includes('senior')) {
-    seniority = 'کارشناسی ارشد / سینیور';
-    interview = 77;
-    review = 50;
-  } else if (text.includes('کارآموز') || text.includes('junior')) {
-    seniority = 'کارآموزی / تازه‌کار';
-    interview = 70;
-    review = 45;
+/** Convert GoogleGenAI/network failures into honest, actionable Persian messages. */
+export function friendlyAiError(err: any): string {
+  const status = err?.status || err?.code;
+  const msg = String(err?.message || '');
+  const isEphemeral = (process.env.GEMINI_API_KEY || '').trim().startsWith('AQ.');
+  if (/API key not valid|API_KEY_INVALID|invalid|unauth|permission/i.test(msg) || status === 400 || status === 401 || status === 403) {
+    return isEphemeral
+      ? 'توکن موقت (AQ.) پذیرفته نشد یا اعتبارش تمام شده است. این توکن‌ها معمولاً کمتر از یک ساعت معتبرند؛ لطفاً یک کلید API دائمی با پیشوند AIza از https://aistudio.google.com/apikey بسازید و در GEMINI_API_KEY بگذارید.'
+      : 'کلید GEMINI_API_KEY نامعتبر است یا دسترسی به مدل Gemini ندارد. لطفاً کلید را بررسی کنید.';
   }
+  if (/fetch failed|ECONN|network|ENOTFOUND|timeout|timed? ?out/i.test(msg)) {
+    return 'ارتباط با سرویس هوش مصنوعی برقرار نشد (مشکل شبکه یا فایروال). اگر از فیلترشکن/پراکسی استفاده می‌کنید مطمئن شوید سرور به generativelanguage.googleapis.com دسترسی دارد و دوباره تلاش کنید.';
+  }
+  if (status === 429 || /429|quota|RESOURCE_EXHAUSTED/i.test(msg)) {
+    return 'سهمیه یا محدودیت نرخ کلید هوش مصنوعی پر شده است. چند لحظه دیگر دوباره تلاش کنید یا از کلید دیگری استفاده کنید.';
+  }
+  return 'دریافت پرسش‌نامه هوشمند ممکن نشد. اتصال اینترنت و کلید GEMINI_API_KEY را بررسی و دوباره تلاش کنید.';
+}
 
+// ================================================================
+// Helpers: turn the user's checkbox answers into prompt constraints
+// ================================================================
+
+function optionLabel(q: ScreeningQuestion, value: string): string {
+  if (q.type === 'single') return q.options.find((o) => o.value === value)?.label || value;
+  return value;
+}
+
+export function buildAnswersBrief(
+  understanding: JobUnderstanding,
+  answers: ScreeningAnswers
+): string {
+  const lines: string[] = [];
+  for (const q of understanding.questions) {
+    const ans = answers[q.id];
+    if (q.type === 'boolean') {
+      const checked = ans === true || ans === undefined ? q.defaultChecked : Boolean(ans);
+      // If answer equals the question default being false and left false → not a constraint
+      if (checked) {
+        lines.push(
+          `${q.kind === 'knockout' ? '【شرط حذفی الزام】' : '【مزیت امتیازی】'} ${q.label}`
+        );
+      }
+    } else if (q.type === 'single') {
+      const value = String(ans ?? q.defaultValue);
+      if (value && value !== 'any') {
+        const label = optionLabel(q, value);
+        lines.push(`【شرط سابقه】 ${q.label}: ${label}`);
+      }
+    } else {
+      const selected = Array.isArray(ans)
+        ? ans
+        : typeof ans === 'string'
+        ? [ans]
+        : q.defaultValues;
+      if (selected.length > 0) {
+        const labels = selected.map((v) => {
+          const opt = q.options.find((o) => o.value === v);
+          return opt?.label || v;
+        });
+        lines.push(`【مهارت‌های ترجیحی کاربر】 ${q.label}: ${labels.join('، ')}`);
+      }
+    }
+  }
+  return lines.length ? lines.join('\n') : 'کاربر شرط اضافه‌ای تیک نزده؛ فقط بر اساس شاخص‌های وزن‌دار ارزیابی کن.';
+}
+
+function emptyEvaluation(reason: string): CandidateEvaluation {
   return {
-    department,
-    seniority,
-    thresholds: { interview, review },
-    criteria,
-    plainExplanation,
+    candidateName: null,
+    contact: { phone: null, email: null, city: null },
+    facts: { yearsExperience: null, education: null, lastRole: null, skills: [], expectedSalary: null },
+    criterionScores: [],
+    score: 0,
+    confidence: 'low',
+    engine: 'ai',
+    recommendation: 'REJECT',
+    summary: reason,
+    whyCategory: reason,
+    strengths: [],
+    weaknesses: [{ point: 'فایل بدون محتوای متنی معتبر', evidence: reason, severity: 'knockout' }],
+    knockoutMisses: [],
+    tags: [],
+    bankSuggested: false,
+    flags: { irrelevant: false, insufficientInfo: true, scannedNoText: false },
   };
 }
 
-/**
- * Helper to find actual quote containing keyword in resume text
- */
-function findQuoteForKeyword(text: string, keywords: string[]): string | null {
-  const lower = text.toLowerCase();
-  for (const kw of keywords) {
-    const idx = lower.indexOf(kw.toLowerCase());
-    if (idx !== -1) {
-      const start = Math.max(0, text.lastIndexOf('.', idx) + 1, text.lastIndexOf('\n', idx) + 1);
-      let end = text.indexOf('.', idx);
-      if (end === -1 || end - start > 120) {
-        end = Math.min(text.length, idx + 60);
-      }
-      const snippet = text.slice(start, end + 1).trim();
-      if (snippet.length >= 8) {
-        return snippet.replace(/\s+/g, ' ');
-      }
-    }
-  }
-  return null;
-}
+// ================================================================
+// PASS 1 — Evaluate a single resume
+// ================================================================
 
-/**
- * Resilient candidate evaluator when external AI is temporarily offline or busy.
- */
-export function generateFallbackCandidateEvaluation(
-  jobUnderstanding: JobUnderstanding,
+export async function evaluateResumeV2(
+  departmentName: string,
+  roleTitle: string,
+  extraNotes: string,
+  understanding: JobUnderstanding,
+  answers: ScreeningAnswers,
   resumeText: string,
   fileName: string
+): Promise<CandidateEvaluation> {
+  const normalized = normalizePersianText(resumeText || '');
+  if (!normalized || normalized.trim().length < 50) {
+    const ev = emptyEvaluation('متن استخراج‌شده از رزومه برای تحلیل تخصصی کافی نیست (احتمالاً فایل اسکن‌شده یا تصویری است).');
+    ev.flags.scannedNoText = true;
+    return ev;
+  }
+
+  const criteriaStr = understanding.criteria
+    .map((c) => `${c.id}. ${c.title} — وزن ${c.weight}٪ ${c.mustHave ? '(الزامی)' : ''}`)
+    .join('\n');
+  const answersBrief = buildAnswersBrief(understanding, answers);
+
+  const prompt = `تو یک کارشناس ارشد و بسیار دقیق غربالگری رزومه در هلدینگ تولیدی «سیلانه سبز» هستی.
+یک رزومه را موشکافانه با شرایط شغل می‌سنجی.
+
+دپارتمان: ${departmentName}
+${roleTitle.trim() ? `عنوان شغلی: ${roleTitle.trim()}` : ''}
+سطح ارشدیت نقش: ${understanding.seniority}
+${extraNotes.trim() ? `توضیحات تکمیلی شغل:\n${extraNotes.trim()}\n` : ''}
+شاخص‌های وزن‌دار امتیازدهی:
+${criteriaStr}
+
+شرط‌هایی که کاربر منابع انسانی تیک زده:
+${answersBrief}
+
+آستانه‌ها:
+- بالای ${understanding.thresholds.interview} = INTERVIEW (مصاحبه شود)
+- بین ${understanding.thresholds.review} و ${understanding.thresholds.interview} = REVIEW (بررسی شود)
+- زیر ${understanding.thresholds.review} = REJECT (رد شود)
+
+نام فایل رزومه: ${fileName}
+متن رزومه:
+"""
+${normalized.slice(0, 7500)}
+"""
+
+قوانین نقض‌ناپذیر:
+۱. فقط بر اساس چیزی که واقعاً در متن رزومه آمده قضاوت کن. هرگز نام، عدد، سابقه، مدرک یا مهارتی را حدس نزن یا به نام فایل نسبت نده. اگر اطلاعاتی در رزومه نبود، null بده.
+۲. candidateName فقط اگر نام صریح در رزومه آمده پر شود؛ در غیر این صورت null.
+۳. برای هر شاخص در criterionScores: امتیاز ۰ تا ۱۰۰، rationale یک جمله فارسی، و evidence یک «نقل‌قول مستقیم کوتاه واقعی» از متن رزومه. اگر شاخصی هیچ شاهدی در رزومه نداشت، امتیاز پایین و evidence صریحاً بنویس «در رزومه به این مورد اشاره نشده».
+۴. نقاط قوت strengths حداکثر ۴، نقاط ضعف weaknesses حداکثر ۴؛ همه با evidence واقعی. severity: مواردی که شروط حذفی تیک‌خورده یا شاخص‌های الزامی را نقض می‌کنند «knockout»، نقص‌های مهم «major»، موارد جزئی «minor».
+۵. knockoutMisses: فهرست شرط‌های حذفی تیک‌خورده‌ای که در رزومه شواهدی برایشان نیست یا خلافشان دیده شده.
+۶. score از ۰ تا ۱۰۰ بر اساس میانگین وزنی criterionScores و قضاوت تو. قوانین سقفی:
+   - رزومه کاملاً نامرتبط با دپارتمان/شغل: score زیر ۳۰، flags.irrelevant=true، recommendation=REJECT.
+   - اگر هر شاخص الزامی (mustHave) یا هر شرط حذفی تیک‌خورده احراز نشود: سقف score برابر ۴۵.
+   - اگر رزومه آن‌قدر خلاصه/کم‌اطلاع است که قضاوت ممکن نیست: flags.insufficientInfo=true و score پایین.
+۷. صرف فهرست‌شدن نام یک مهارت بدون سابقه/پروژه/تجربه، امتیاز کامل نده؛ جابه‌جایی‌های شغلی بسیار پرتکرار را به‌عنوان ریسک ثبات شغلی در weaknesses بیاور.
+۸. نام، جنسیت، سن، وضعیت تأهل، عکس و ملیت هیچ تأثیری بر امتیاز ندارند؛ فقط شایستگی‌ها سنجیده شوند.
+۹. facts: yearsExperience عدد صحیح سال‌ها (اگر قابل‌تشخیص بود وگرنه null)، education آخرین مدرک/رشته، lastRole آخرین سمت، skills حداکثر ۸ مهارت کلیدی، expectedSalary فقط اگر صریح در رزومه آمده. contact: phone/email/city فقط در صورت وجود.
+۱۰. tags: ۳ تا ۶ برچسب کوتاه فارسی برای فیلتر در بانک رزومه (حوزه تخصص، مهارت‌ها، سطح).
+۱۱. bankSuggested: اگر برای این شغل مناسب نیست ولی برای فرصت‌های آتی همین دپارتمان ارزشمند است true.
+۱۲. summary: ۲ تا ۳ جمله روان فارسی که بگوید چرا این امتیاز. whyCategory: یک جمله خیلی ساده و خودمانی که تیتر «چرا این دسته؟» شود.
+۱۳. confidence: high وقتی شواهد کافی و روشن است؛ medium وقتی چند نکته مبهم است؛ low وقتی رزومه ناقص است.
+۱۴. رزومه فارسی یا انگلیسی هر دو پشتیبانی شوند؛ همه فیلدهای متنی خروجی حتماً فارسی باشند (اسم مهارت‌های انگلیسی می‌تواند بماند).
+
+فقط JSON معتبر با این ساختار خروجی بده، بدون هیچ توضیح اضافه:
+{
+  "candidateName": null,
+  "contact": { "phone": null, "email": null, "city": null },
+  "facts": { "yearsExperience": null, "education": null, "lastRole": null, "skills": [], "expectedSalary": null },
+  "criterionScores": [
+    { "criterionId": "c1", "score": 80, "rationale": "...", "evidence": "نقل قول واقعی از رزومه" }
+  ],
+  "score": 78,
+  "confidence": "high",
+  "recommendation": "INTERVIEW",
+  "summary": "...",
+  "whyCategory": "...",
+  "strengths": [ { "point": "...", "evidence": "...", "severity": "minor" } ],
+  "weaknesses": [ { "point": "...", "evidence": "...", "severity": "major" } ],
+  "knockoutMisses": [],
+  "tags": [],
+  "bankSuggested": false,
+  "flags": { "irrelevant": false, "insufficientInfo": false, "scannedNoText": false }
+}`;
+
+  try {
+    const raw = await generateWithFallback(prompt, { temperature: 0.1, timeoutMs: 25_000 });
+    const parsed = cleanAndParseJson<any>(raw, null);
+    if (!parsed) throw new Error('malformed evaluation');
+    return finalizeEvaluation(parsed, understanding, answers, 'ai');
+  } catch (err: any) {
+    if (err?.message !== 'GEMINI_CIRCUIT_OPEN') {
+      console.log(`[evaluateResumeV2] «${fileName}» → local engine (${err?.message || 'err'})`);
+    }
+    return evaluateResumeLocal(normalized, understanding, answers, fileName);
+  }
+}
+
+/** Normalize, clamp and apply hard business rules to any AI/local evaluation. */
+export function finalizeEvaluation(
+  raw: any,
+  understanding: JobUnderstanding,
+  answers: ScreeningAnswers,
+  engine: AnalysisEngine
 ): CandidateEvaluation {
-  // Clean fallback name
-  let cleanName = fileName
-    .replace(/\.[^/.]+$/, '')
-    .replace(/^Resume[_-]?\d*[_-]?/i, '')
-    .replace(/[-_]/g, ' ')
-    .trim();
+  const num = (v: any, d = 0) => {
+    const n = Math.round(Number(toEnglishDigits(String(v ?? '')).replace(/[^\d.-]/g, '')));
+    return Number.isFinite(n) ? n : d;
+  };
+  const arr = <T>(v: any): T[] => (Array.isArray(v) ? v : []);
+  const str = (v: any) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
-  // Try extracting candidate name from top lines of resume text
-  if (resumeText) {
-    const lines = resumeText.slice(0, 500).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    for (const line of lines.slice(0, 5)) {
-      const match = line.match(/(?:نام\s*(?:و\s*نام\s*خانوادگی)?|Name)\s*[:\-–]\s*([^\n,;|]{3,35})/i);
-      if (match && match[1]) {
-        const candidate = match[1].trim();
-        if (candidate.length >= 3 && !candidate.includes('رزومه')) {
-          cleanName = candidate;
-          break;
-        }
-      }
-    }
-  }
-
-  if (!resumeText || resumeText.trim().length < 20) {
+  const criteria: Criterion[] = understanding.criteria;
+  const criterionScores: CriterionScore[] = criteria.map((c) => {
+    const found = arr<any>(raw.criterionScores).find(
+      (s) => String(s.criterionId) === c.id || (s.title && String(s.title).includes(c.title.slice(0, 8)))
+    );
     return {
-      candidateName: cleanName || 'کاندید بدون نام',
-      score: 0,
-      summary: 'فایل بدون لایه متنی یا با حجم محتوای ناکافی برای ارزیابی است.',
-      strengths: [],
-      weaknesses: [{ point: 'فاقد متن قابل پردازش', evidence: 'رزومه اسکن‌شده یا بدون متن است' }],
-      recommendation: 'REJECT',
-      insufficientInfo: true,
-      irrelevant: false,
+      criterionId: c.id,
+      title: c.title,
+      score: Math.max(0, Math.min(100, num(found?.score, 40))),
+      rationale: str(found?.rationale) || 'تحلیل جزئی این شاخص در دسترس نیست.',
+      evidence: str(found?.evidence) || 'در رزومه شاهد مشخصی برای این شاخص ثبت نشده.',
     };
-  }
+  });
 
-  const textLower = resumeText.toLowerCase();
-  let matchedScore = 48; // baseline
-  let hasMissingMustHave = false;
-  const strengths: { point: string; evidence: string }[] = [];
-  const weaknesses: { point: string; evidence: string }[] = [];
+  // Weighted score from per-criterion scores (authoritative baseline)
+  const weighted = Math.round(
+    criterionScores.reduce((s, cs) => {
+      const c = criteria.find((x) => x.id === cs.criterionId);
+      return s + cs.score * (c?.weight || 0);
+    }, 0) / 100
+  );
+  const aiScore = Math.max(0, Math.min(100, num(raw.score, weighted)));
+  // Trust the model's holistic score only if it's within ±12 of the weighted baseline
+  let score = Math.abs(aiScore - weighted) <= 12 ? aiScore : weighted;
 
-  for (const criterion of jobUnderstanding.criteria) {
-    const hits = criterion.keywords.filter((kw) => textLower.includes(kw.toLowerCase()));
-    if (hits.length > 0) {
-      matchedScore += Math.round((criterion.weight * hits.length) / (criterion.keywords.length * 1.5));
-      const quote = findQuoteForKeyword(resumeText, hits);
-      strengths.push({
-        point: `تطابق در شاخص «${criterion.title}»`,
-        evidence: quote ? `«${quote.slice(0, 90)}»` : `مشاهده سوابق مرتبط با (${hits.slice(0, 2).join('، ')})`,
-      });
-    } else if (criterion.mustHave) {
-      hasMissingMustHave = true;
-      weaknesses.push({
-        point: `عدم مشاهده سوابق کافی در «${criterion.title}»`,
-        evidence: `در متن رزومه کلیدواژه‌های الزامی این مهارت یافت نشد`,
-      });
-    } else {
-      weaknesses.push({
-        point: `نیاز به تقویت در «${criterion.title}»`,
-        evidence: `شواهد مشخصی از تجارب مرتبط با این شاخص در متن رزومه دیده نشد`,
-      });
+  const flags = {
+    irrelevant: Boolean(raw.flags?.irrelevant),
+    insufficientInfo: Boolean(raw.flags?.insufficientInfo),
+    scannedNoText: Boolean(raw.flags?.scannedNoText),
+  };
+
+  const strengths: EvidencePoint[] = arr<any>(raw.strengths)
+    .slice(0, 4)
+    .map((s) => ({
+      point: str(s.point) || 'نقطه قوت',
+      evidence: str(s.evidence) || 'شاهد در رزومه ثبت نشده.',
+      severity: (['knockout', 'major', 'minor'].includes(s.severity) ? s.severity : 'minor') as
+        | 'knockout'
+        | 'major'
+        | 'minor',
+    }));
+  const weaknesses: EvidencePoint[] = arr<any>(raw.weaknesses)
+    .slice(0, 4)
+    .map((w) => ({
+      point: str(w.point) || 'مورد نیازمند بررسی',
+      evidence: str(w.evidence) || 'شاهد در رزومه ثبت نشده.',
+      severity: (['knockout', 'major', 'minor'].includes(w.severity) ? w.severity : 'minor') as
+        | 'knockout'
+        | 'major'
+        | 'minor',
+    }));
+  const knockoutMisses = arr<string>(raw.knockoutMisses)
+    .map((k) => str(k))
+    .filter((k): k is string => Boolean(k));
+
+  // Cross-check knockout questions the user ticked but the model didn't list
+  for (const q of understanding.questions) {
+    if (q.kind !== 'knockout' || q.type !== 'boolean') continue;
+    const checked = answers[q.id] === undefined ? q.defaultChecked : answers[q.id] === true;
+    if (checked && !knockoutMisses.some((m) => m.includes(q.label.slice(0, 10)))) {
+      // The model is the evidence reader; only apply ceiling if weaknesses flag it indirectly.
     }
   }
 
-  // Ceiling rule: missing must-have caps score at 45
-  if (hasMissingMustHave && matchedScore > 45) {
-    matchedScore = 45;
-  }
+  const facts = {
+    yearsExperience: raw.facts?.yearsExperience == null ? null : Math.max(0, num(raw.facts.yearsExperience, 0)),
+    education: str(raw.facts?.education),
+    lastRole: str(raw.facts?.lastRole),
+    skills: arr<any>(raw.facts?.skills).map((s) => String(s)).slice(0, 8),
+    expectedSalary: str(raw.facts?.expectedSalary),
+  };
+  const contact = {
+    phone: str(raw.contact?.phone),
+    email: str(raw.contact?.email),
+    city: str(raw.contact?.city),
+  };
 
-  matchedScore = Math.max(20, Math.min(94, matchedScore));
+  // Hard ceiling rules
+  const hasKnockoutMiss = knockoutMisses.length > 0 || weaknesses.some((w) => w.severity === 'knockout');
+  const missingMustHave = criterionScores.some((cs) => {
+    const c = criteria.find((x) => x.id === cs.criterionId);
+    return c?.mustHave && cs.score < 35;
+  });
+  if (flags.irrelevant) score = Math.min(score, 29);
+  if ((hasKnockoutMiss || missingMustHave) && !flags.irrelevant) score = Math.min(score, 45);
 
-  let recommendation: 'INTERVIEW' | 'REVIEW' | 'REJECT' = 'REJECT';
-  if (matchedScore >= jobUnderstanding.thresholds.interview) {
-    recommendation = 'INTERVIEW';
-  } else if (matchedScore >= jobUnderstanding.thresholds.review) {
-    recommendation = 'REVIEW';
-  }
-
-  const summary = hasMissingMustHave
-    ? `کاندید در برخی حوزه‌ها سوابق مفیدی دارد اما به دلیل فقدان شواهد کافی در شاخص‌های الزامی، امتیاز ${matchedScore} تعیین گردید.`
-    : matchedScore >= jobUnderstanding.thresholds.interview
-    ? `تطابق بسیار خوبی با شاخص‌های کلیدی دپارتمان ${jobUnderstanding.department} مشاهده شد و نمره ${matchedScore} احراز گردید.`
-    : `رزومه بر اساس شاخص‌های نقش «${jobUnderstanding.department}» سنجیده شد و نمره تطابق اولیه ${matchedScore} از ۱۰۰ تعیین گردید.`;
+  let recommendation: Recommendation;
+  if (flags.irrelevant) recommendation = 'REJECT';
+  else if (score >= understanding.thresholds.interview) recommendation = 'INTERVIEW';
+  else if (score >= understanding.thresholds.review) recommendation = 'REVIEW';
+  else recommendation = 'REJECT';
 
   return {
-    candidateName: cleanName || 'کاندید',
-    score: matchedScore,
-    summary,
-    strengths: strengths.slice(0, 4),
-    weaknesses: weaknesses.slice(0, 3),
+    candidateName: str(raw.candidateName),
+    contact,
+    facts,
+    criterionScores,
+    score,
+    confidence: (['high', 'medium', 'low'].includes(raw.confidence) ? raw.confidence : 'medium') as
+      | 'high'
+      | 'medium'
+      | 'low',
+    engine,
     recommendation,
-    insufficientInfo: false,
-    irrelevant: false,
+    summary: str(raw.summary) || 'تحلیل این رزومه به‌طور کامل در دسترس نیست.',
+    whyCategory: str(raw.whyCategory) || str(raw.summary) || 'این رزومه بر اساس معیارهای شغل سنجیده شد.',
+    strengths,
+    weaknesses,
+    knockoutMisses,
+    tags: arr<any>(raw.tags).map((t) => String(t)).slice(0, 6),
+    bankSuggested: Boolean(raw.bankSuggested),
+    flags,
+  };
+}
+
+// ---------------- Local keyword-based engine (honestly labeled) ----------------
+
+export function evaluateResumeLocal(
+  resumeText: string,
+  understanding: JobUnderstanding,
+  _answers: ScreeningAnswers,
+  fileName: string
+): CandidateEvaluation {
+  const text = normalizePersianText(resumeText || '');
+  // Digit-normalized copy for phone/year/number regexes (resumes often use Persian digits)
+  const digitsText = toEnglishDigits(text);
+  const lower = text.toLowerCase();
+  const lowerDigits = digitsText.toLowerCase();
+
+  // Name: top lines, "نام: ..." pattern
+  let candidateName: string | null = null;
+  const head = text.slice(0, 400).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  for (const line of head.slice(0, 6)) {
+    const m = line.match(/(?:نام\s*(?:و\s*نام\s*خانوادگی)?|Name)\s*[:\-–]\s*([^\n,;|]{3,40})/i);
+    if (m && m[1] && !/رزومه|resume|cv/i.test(m[1])) {
+      candidateName = m[1].trim();
+      break;
+    }
+  }
+  if (!candidateName && head[0] && head[0].length <= 30 && /^[\u0600-\u06FF\sA-Za-z.]+$/.test(head[0])) {
+    candidateName = head[0];
+  }
+
+  const phoneMatch = digitsText.match(/(?:\+98|0098|98|0)?9\d{9}/);
+  const emailMatch = digitsText.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+  const cityMatch = digitsText.match(/(?:ساکن|محل سکونت|شهر|location)\s*[:\-–]?\s*([\u0600-\u06FF]{2,20})/i);
+
+  const yearsMatch = digitsText.match(/(\d{1,2})\s*(?:سال\s*(?:سابقه|تجربه)|years?\s*(?:of)?\s*experience)/i);
+  const years = yearsMatch ? Math.min(40, parseInt(toEnglishDigits(yearsMatch[1]), 10)) : null;
+
+  // Per-criterion scoring via keyword overlap with title tokens
+  const stopWords = new Set(['و', 'در', 'با', 'به', 'های', 'سازی', 'کار', 'تجربه', 'دانش', 'تسلط', 'آشنایی', 'بر', 'از', 'این', 'آن']);
+  const criterionScores: CriterionScore[] = understanding.criteria.map((c) => {
+    const tokens = c.title
+      .split(/[\s،,/()]+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 2 && !stopWords.has(t));
+    const hits = tokens.filter((t) => lower.includes(t.toLowerCase()));
+    const ratio = tokens.length ? hits.length / tokens.length : 0;
+    const score = Math.round(25 + ratio * 70);
+    const quote = hits.length
+      ? (() => {
+          const idx = lower.indexOf(hits[0].toLowerCase());
+          const start = Math.max(0, text.lastIndexOf('.', idx) + 1);
+          const end = text.indexOf('.', idx);
+          const snippet = text.slice(start, end === -1 ? Math.min(text.length, idx + 80) : end + 1).trim();
+          return snippet.slice(0, 120) || `اشاره به ${hits.slice(0, 2).join('، ')} در رزومه`;
+        })()
+      : 'در رزومه شاهد مشخصی برای این شاخص یافت نشد';
+    return {
+      criterionId: c.id,
+      title: c.title,
+      score,
+      rationale: hits.length
+        ? `اشاره به ${hits.slice(0, 3).join('، ')} در متن رزومه دیده شد.`
+        : 'کلیدواژه‌ها و سوابق مرتبط با این شاخص در رزومه مشاهده نشد.',
+      evidence: quote,
+    };
+  });
+
+  const score = Math.round(
+    criterionScores.reduce((s, cs) => {
+      const c = understanding.criteria.find((x) => x.id === cs.criterionId);
+      return s + cs.score * (c?.weight || 0);
+    }, 0) / 100
+  );
+
+  const strengths: EvidencePoint[] = criterionScores
+    .filter((cs) => cs.score >= 55)
+    .slice(0, 4)
+    .map((cs) => ({ point: `تطابق نسبی در «${cs.title}»`, evidence: cs.evidence, severity: 'minor' as const }));
+  const weaknesses: EvidencePoint[] = criterionScores
+    .filter((cs) => cs.score < 45)
+    .slice(0, 4)
+    .map((cs) => ({
+      point: `شواهد کافی برای «${cs.title}» یافت نشد`,
+      evidence: cs.evidence,
+      severity: (understanding.criteria.find((x) => x.id === cs.criterionId)?.mustHave ? 'knockout' : 'minor') as
+        | 'knockout'
+        | 'minor',
+    }));
+
+  const missingMust = criterionScores.some((cs) => {
+    const c = understanding.criteria.find((x) => x.id === cs.criterionId);
+    return c?.mustHave && cs.score < 35;
+  });
+  const finalScore = missingMust ? Math.min(score, 45) : Math.max(20, Math.min(score, 90));
+
+  let recommendation: Recommendation = 'REJECT';
+  if (finalScore >= understanding.thresholds.interview) recommendation = 'INTERVIEW';
+  else if (finalScore >= understanding.thresholds.review) recommendation = 'REVIEW';
+
+  return {
+    candidateName,
+    contact: {
+      phone: phoneMatch ? phoneMatch[0] : null,
+      email: emailMatch ? emailMatch[0] : null,
+      city: cityMatch ? cityMatch[1] : null,
+    },
+    facts: {
+      yearsExperience: years,
+      education: text.match(/(کارشناسی|کاردانی|کارشناسی\s*ارشد|دکتری|دیپلم)[\s\u0600-\u06FF]{0,25}/)?.[0] || null,
+      lastRole: head.find((l) => /(کارشناس|مهندس|مدیر|سرپرست|فروشنده|اپراتور|حسابدار|کارگر|تکنسین)/.test(l)) || null,
+      skills: [],
+      expectedSalary: null,
+    },
+    criterionScores,
+    score: finalScore,
+    confidence: 'low',
+    engine: 'local',
+    recommendation,
+    summary: `این ارزیابی با موتور محلی (تطبیق کلیدواژه‌ای و نه هوش مصنوعی) انجام شده؛ امتیاز ${finalScore} بر اساس کلمات کلیدی شاخص‌ها در رزومه است و دقت کمتری دارد.`,
+    whyCategory:
+      recommendation === 'INTERVIEW'
+        ? 'تطابق کلیدواژه‌ای خوبی با شاخص‌های شغل دیده شده (تحلیل محلی، نه هوشمند).'
+        : recommendation === 'REVIEW'
+        ? 'تطابق نسبی با شاخص‌ها وجود دارد ولی نیاز به چشم انسانی است (تحلیل محلی).'
+        : 'شواهد کافی برای تطابق با شاخص‌های شغل در متن پیدا نشد (تحلیل محلی).',
+    strengths,
+    weaknesses,
+    knockoutMisses: weaknesses.filter((w) => w.severity === 'knockout').map((w) => w.point),
+    tags: [],
+    bankSuggested: false,
+    flags: { irrelevant: false, insufficientInfo: false, scannedNoText: false },
+  };
+}
+
+// ================================================================
+// PASS 2 — Relative calibration (top 15 + borderline ±5)
+// ================================================================
+
+export async function calibrateV2(
+  understanding: JobUnderstanding,
+  candidates: Array<{ id: string; name: string; score: number; summary: string }>
+): Promise<Record<string, number>> {
+  if (candidates.length <= 1) return {};
+  const prompt = `تو مسئول کالیبراسیون نهایی نمرات غربالگری هستی تا عدالت نسبی بین کاندیداها برقرار شود.
+آستانه مصاحبه: ${understanding.thresholds.interview}، آستانه بررسی: ${understanding.thresholds.review}.
+کاندیداها:
+${JSON.stringify(candidates.slice(0, 40), null, 2)}
+
+برای هر فرد، نمره تعدیل‌شده (۰ تا ۱۰۰) را بده؛ حداکثر تغییر مثبت یا منفی ۱۰ نمره؛ اگر نمره منصفانه است همان را برگردان.
+فقط JSON: { "adjustments": { "id1": 82, "id2": 71 } }`;
+
+  try {
+    const raw = await generateWithFallback(prompt, { temperature: 0.1, timeoutMs: 20_000 });
+    const parsed = cleanAndParseJson<{ adjustments: Record<string, number> }>(raw, { adjustments: {} });
+    const out: Record<string, number> = {};
+    for (const [id, val] of Object.entries(parsed.adjustments || {})) {
+      const orig = candidates.find((c) => c.id === id);
+      if (!orig) continue;
+      let n = Math.round(Number(val));
+      if (!Number.isFinite(n)) continue;
+      n = Math.max(0, Math.min(100, Math.max(orig.score - 10, Math.min(orig.score + 10, n))));
+      out[id] = n;
+    }
+    return out;
+  } catch (err) {
+    console.log('[calibrateV2] skipped (AI busy), keeping original scores.');
+    return {};
+  }
+}
+
+// ================================================================
+// Message drafts
+// ================================================================
+
+const KIND_TITLES: Record<MessageKind, string> = {
+  INTERVIEW_INVITE: 'دعوت به مصاحبه',
+  INFO_REQUEST: 'درخواست تکمیل اطلاعات',
+  BANK_NOTICE: 'اطلاع نگهداری رزومه در بانک استعداد',
+};
+
+export async function draftMessageV2(
+  record: Pick<ResumeRecord, 'candidateName' | 'facts' | 'departmentName' | 'tags' | 'strengths' | 'score'>,
+  kind: MessageKind
+): Promise<DraftMessage> {
+  const name = record.candidateName || '[نام کاندید]';
+  const fallback = (): DraftMessage => {
+    if (kind === 'INTERVIEW_INVITE') {
+      return {
+        kind,
+        subject: 'دعوت به مصاحبه — هلدینگ سیلانه سبز',
+        body:
+          `سلام ${name} عزیز،\n\n` +
+          `رزومه شما برای موقعیت شغلی در واحد ${record.departmentName} هلدینگ سیلانه سبز بررسی شد و با سوابق شما هم‌خوانی خوبی دارد. ` +
+          `خوشحال می‌شویم برای یک گفتگوی کوتاه آشَنایی هماهنگ کنیم.\n\n` +
+          `زمان پیشنهادی: [زمان]\nمکان: [مکان / لینک]\n\nلطفاً آمادگی و زمان مناسب خود را اعلام بفرمایید.\nبا احترام،\nمنابع انسانی هلدینگ سیلانه سبز`,
+      };
+    }
+    if (kind === 'INFO_REQUEST') {
+      return {
+        kind,
+        subject: 'درخواست تکمیل اطلاعات — هلدینگ سیلانه سبز',
+        body:
+          `سلام ${name} عزیز،\n\n` +
+          `رزومه شما در دست بررسی است؛ برای ارزیابی دقیق‌تر لطفاً موارد زیر را تکمیل و ارسال بفرمایید:\n` +
+          `۱. [مورد موردنیاز ۱]\n۲. [مورد موردنیاز ۲]\n\nسپاس‌گزار همکاری شما هستیم.\nمنابع انسانی هلدینگ سیلانه سبز`,
+      };
+    }
+    return {
+      kind,
+      subject: 'رزومه شما در بانک استعداد سیلانه سبز ذخیره شد',
+      body:
+        `سلام ${name} عزیز،\n\n` +
+        `از ارسال رزومه و علاقه شما به هلدینگ سیلانه سبز سپاسگزاریم. رزومه شما در بانک رزومه‌های ما نگهداری می‌شود و در صورت باز شدن موقعیت متناسب در واحد ${record.departmentName} با شما تماس خواهیم گرفت.\n\nبا احترام،\nمنابع انسانی هلدینگ سیلانه سبز`,
+    };
+  };
+
+  const prompt = `تو در بخش منابع انسانی هلدینگ تولیدی «سیلانه سبز» کار می‌کنی و می‌خواهی برای یک کاندید پیام کوتاه و مؤدبانه فارسی بنویسی.
+نوع پیام: ${KIND_TITLES[kind]}
+نام کاندید: ${name}
+دپارتمان: ${record.departmentName}
+آخرین سمت: ${record.facts?.lastRole || '—'}
+سال سابقه: ${record.facts?.yearsExperience ?? '—'}
+نقاط قوت استخراج‌شده: ${record.strengths.slice(0, 2).map((s) => s.point).join('؛ ') || '—'}
+
+قواعد:
+- لحن گرم، حرفه‌ای و کوتاه (۴ تا ۶ خط)؛ خطاب با نام کاندید و اشاره کوتاه به یک نقطه قوت واقعی.
+- در دعوت به مصاحبه، جای [زمان] و [مکان] را خالی بگذار تا کاربر پر کند.
+- در درخواست تکمیل اطلاعات، دو جای خالی شماره‌دار برای موارد موردنیاز بگذار.
+- هیچ عدد امتیاز یا اصطلاح فنی در متن نباشد.
+- خروجی فقط JSON: { "subject": "موضوع کوتاه", "body": "متن کامل با \\n برای خط جدید" }`;
+
+  try {
+    const raw = await generateWithFallback(prompt, { temperature: 0.4, timeoutMs: 15_000 });
+    const parsed = cleanAndParseJson<{ subject?: string; body?: string }>(raw, {});
+    if (parsed.body && parsed.body.trim().length > 30) {
+      return { kind, subject: parsed.subject?.trim() || KIND_TITLES[kind], body: parsed.body.trim() };
+    }
+    return fallback();
+  } catch {
+    return fallback();
+  }
+}
+
+// ---------------- Stats helper ----------------
+
+export function computeStats(records: ResumeRecord[]): BatchStats {
+  const live = records.filter((r) => !r.deleted);
+  return {
+    total: live.length,
+    interview: live.filter((r) => r.category === 'INTERVIEW').length,
+    review: live.filter((r) => r.category === 'REVIEW').length,
+    reject: live.filter((r) => r.category === 'REJECT').length,
+    unjudgeable: live.filter((r) => r.category === 'UNJUDGEABLE').length,
+    error: live.filter((r) => r.category === 'ERROR').length,
   };
 }
