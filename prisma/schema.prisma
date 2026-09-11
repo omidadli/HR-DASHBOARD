@@ -1,0 +1,287 @@
+// Prisma Schema for Iranian Enterprise Human Resource Management System (سامانه منابع انسانی کارا)
+// Designed for PostgreSQL with full localization and Iranian Labor Law compliance
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  HR_DIRECTOR      // مدیر ارشد منابع انسانی
+  DEPT_MANAGER     // مدیر واحد / دپارتمان
+  EMPLOYEE         // کارمند
+}
+
+enum CandidateStage {
+  INITIAL_SCREENING     // بررسی اولیه
+  PHONE_INTERVIEW       // مصاحبه تلفنی
+  IN_PERSON_INTERVIEW   // مصاحبه حضوری / فنی
+  OFFER                 // پیشنهاد همکاری (آفر)
+  HIRED                 // استخدام شده
+  REJECTED              // رد شده
+}
+
+enum CandidateCategory {
+  INTERVIEW_PRIORITY    // اولویت مصاحبه (نمره بالای ۷)
+  NEEDS_REVIEW          // نیازمند بررسی مدیر (نمره ۵ تا ۷)
+  INITIAL_REJECTION     // رد اولیه (نمره زیر ۵)
+}
+
+enum JobStatus {
+  ACTIVE
+  DRAFT
+  ARCHIVED
+}
+
+enum LeaveType {
+  ANNUAL          // مرخصی استحقاقی (۲۶ روز در سال بر اساس قانون کار ایران)
+  SICK            // مرخصی استعلاجی (مورد تایید تامین اجتماعی)
+  UNPAID          // مرخصی بدون حقوق
+  MARRIAGE        // مرخصی ازدواج (۳ روز با حقوق طبق ماده ۷۳)
+  MATERNITY       // مرخصی زایمان (۹ ماه طبق قانون جوانی جمعیت)
+}
+
+enum LeaveStatus {
+  PENDING_MANAGER // در انتظار تایید مدیر مستقیم
+  PENDING_HR      // در انتظار تایید نهایی منابع انسانی
+  APPROVED        // تایید شده
+  REJECTED        // رد شده
+}
+
+enum PayrollStatus {
+  DRAFT
+  FINALIZED
+  PAID
+}
+
+// -------------------------------------------------------------
+// Core User & Auth Models
+// -------------------------------------------------------------
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String
+  fullName      String    // نام و نام خانوادگی به فارسی
+  role          Role      @default(EMPLOYEE)
+  employeeId    String?   @unique
+  employee      Employee? @relation(fields: [employeeId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// -------------------------------------------------------------
+// Module 1: Recruitment & Hiring (سامانه جذب و استخدام)
+// -------------------------------------------------------------
+model JobPosting {
+  id              String         @id @default(uuid())
+  title           String         // عنوان شغلی (مثلاً کارشناس ارشد فرانت‌اند)
+  department      String         // دپارتمان (مثلاً فناوری اطلاعات)
+  employmentType  String         // نوع همکاری (تمام‌وقت، پاره‌وقت، دورکاری)
+  location        String         // محل کار (تهران - کارخانه / ستاد)
+  description     String         // شرح موقعیت شغلی
+  requirements    String         // نیازمندی‌ها و مهارت‌های کلیدی
+  status          JobStatus      @default(ACTIVE)
+  criteria        JobCriteria[]  // معیارهای ارزیابی وزنی هوش مصنوعی
+  candidates      Candidate[]
+  createdAtJalali String         // تاریخ شمسی ایجاد (مثلا ۱۴۰۳/۰۶/۱۵)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+model JobCriteria {
+  id          String     @id @default(uuid())
+  jobId       String
+  job         JobPosting @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  title       String     // عنوان شاخص (مثلاً تجربه با React و Next.js)
+  weight      Int        // وزن شاخص بین ۱ تا ۱۰۰
+  description String?    // توضیحات فنی برای مدل هوش مصنوعی
+}
+
+model Candidate {
+  id                String             @id @default(uuid())
+  jobId             String
+  job               JobPosting         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  fullName          String             // نام کامل متقاضی
+  email             String
+  phone             String             // شماره موبایل (مثلاً 09121234567)
+  resumeFileName    String             // نام فایل رزومه (PDF)
+  resumeText        String             @db.Text // متن استخراج شده از رزومه جهت تحلیل
+  overallScore      Float?             // نمره کل از ۱۰ (ارزیابی Gemini)
+  category          CandidateCategory? // دسته‌بندی هوشمند
+  stage             CandidateStage     @default(INITIAL_SCREENING)
+  strengths         String[]           // نقاط قوت مشخص شده توسط هوش مصنوعی
+  weaknesses        String[]           // نقاط ضعف یا کمبودها
+  resumeQuotes      String[]           // شواهد متنی مستقیم از داخل رزومه
+  criteriaScores    Json?              // نمرات مجزا به تفکیک شاخص‌ها جهت رادار چارت
+  inTalentPool      Boolean            @default(false) // استخر استعدادها
+  talentPoolNotes   String?            // یادداشت استخر استعدادها
+  scheduledInterview DateTime?         // تاریخ و زمان مصاحبه
+  interviewJalali   String?            // تاریخ مصاحبه به شمسی
+  interviewType     String?            // نوع مصاحبه (فنی، منابع انسانی، عمومی)
+  interviewNotes    String?
+  emailDraftSubject String?            // پیش‌نویس ایمیل - موضوع
+  emailDraftBody    String?            @db.Text // پیش‌نویس ایمیل - متن
+  emailDraftType    String?            // REJECTION یا INVITATION
+  appliedAtJalali   String             // تاریخ ثبت درخواست به شمسی
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+// -------------------------------------------------------------
+// Module 2: Employee Records (پرونده پرسنلی و چارت سازمانی)
+// -------------------------------------------------------------
+model Employee {
+  id               String            @id @default(uuid())
+  personnelCode    String            @unique // کد پرسنلی (مثلاً ۱۰۰۲۴)
+  nationalId       String            @unique // کد ملی ۱۰ رقمی معتبر
+  fullName         String            // نام و نام خانوادگی کامل
+  fatherName       String?           // نام پدر
+  birthDateJalali  String?           // تاریخ تولد شمسی
+  phone            String            // تلفن همراه
+  email            String            @unique
+  department       String            // واحد سازمانی
+  jobTitle         String            // پست / سمت سازمانی
+  hireDateJalali   String            // تاریخ استخدام شمسی
+  baseSalaryToman  BigInt            @map("baseSalary") // حقوق پایه ماهانه (تومان)
+  maritalStatus    String            // وضعیت تاهل
+  childrenCount    Int               @default(0) // تعداد فرزندان جهت حق اولاد
+  bankIban         String?           // شماره شبا بانکی
+  directManagerId  String?           // شناسه مدیر مستقیم برای چارت و تایید مرخصی
+  status           String            @default("ACTIVE") // وضعیت اشتغال (شاغل، قطع همکاری، تعلیق)
+  ssoContributionDays   Int          @default(0) // سابقه پرداخت حق بیمه (روز)
+  commuteAllowanceToman BigInt       @default(0) // کمک‌هزینه ایاب و ذهاب
+  avatarUrl        String?           // آدرس تصویر پروفایل
+  user             User?
+  documents        EmployeeDocument[]
+  jobHistories     JobHistory[]
+  leaveRequests    LeaveRequest[]
+  attendances      AttendanceRecord[]
+  payrollSlips     PayrollSlip[]
+  goals            PerformanceGoal[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+}
+
+model EmployeeDocument {
+  id          String   @id @default(uuid())
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  title       String   // عنوان مدرک (قرارداد کار، تصویر شناسنامه، سابقه بیمه)
+  fileType    String   // نوع فایل (PDF, JPG)
+  fileUrl     String
+  uploadedAt  String   // تاریخ شمسی بارگذاری
+}
+
+model JobHistory {
+  id            String   @id @default(uuid())
+  employeeId    String
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  changeType    String   // ارتقا، انتقال دپارتمان، افزایش حقوق
+  previousTitle String
+  newTitle      String
+  effectiveDate String   // تاریخ اعمال شمسی
+  description   String?
+}
+
+// -------------------------------------------------------------
+// Module 3: Attendance & Leave (حضور، غیاب و مرخصی طبق قانون کار)
+// -------------------------------------------------------------
+model AttendanceRecord {
+  id            String   @id @default(uuid())
+  employeeId    String
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  dateJalali    String   // تاریخ شمسی (مثلا ۱۴۰۳/۰۶/۱۵)
+  checkIn       String?  // ساعت ورود (مثلا ۰۸:۰۲)
+  checkOut      String?  // ساعت خروج (مثلا ۱۷:۰۵)
+  delayMinutes  Int      @default(0) // تاخیر به دقیقه
+  overtimeHours Float    @default(0) // اضافه کاری به ساعت
+  status        String   @default("PRESENT") // حاضر، غایب، مرخصی، ماموریت
+}
+
+model LeaveRequest {
+  id              String      @id @default(uuid())
+  employeeId      String
+  employee        Employee    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leaveType       LeaveType
+  startDateJalali String      // تاریخ شروع شمسی
+  endDateJalali   String      // تاریخ پایان شمسی
+  daysCount       Float       // تعداد روزهای کاری مورد درخواست
+  reason          String      // علت مرخصی
+  status          LeaveStatus @default(PENDING_MANAGER)
+  managerComment  String?
+  hrComment       String?
+  createdAtJalali String
+  createdAt       DateTime    @default(now())
+}
+
+// -------------------------------------------------------------
+// Module 4: Payroll (حقوق و دستمزد و کسورات قانونی ایران)
+// -------------------------------------------------------------
+model PayrollSlip {
+  id                 String        @id @default(uuid())
+  employeeId         String
+  employee           Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  monthJalali        Int           // ماه شمسی (۱ تا ۱۲)
+  yearJalali         Int           // سال شمسی (مثلا ۱۴۰۳)
+  baseSalary         BigInt        // حقوق پایه روزانه/ماهانه
+  housingAllowance   BigInt        // حق مسکن مصوب شورای عالی کار
+  bonKargari         BigInt        // بن کارگری / کمک هزینه اقلام مصرفی
+  childAllowance     BigInt        // حق اولاد (ماده ۸۶ قانون تامین اجتماعی)
+  commuteAllowance   BigInt        // ایاب و ذهاب
+  overtimePay        BigInt        // فوق العاده اضافه کاری (۴۰٪ مازاد)
+  grossSalary        BigInt        // ناخالص پرداختی
+  ssoInsurance7Pct   BigInt        // سهم بیمه کارگر (۷ درصد تامین اجتماعی)
+  incomeTax          BigInt        // مالیات بر درآمد طبق پله‌های مالیاتی
+  otherDeductions    BigInt        // سایر کسورات (وام، مساعده)
+  netSalary          BigInt        // خالص دریافتی
+  sanavatReserve     BigInt        // ذخیره حق سنوات سالانه
+  eidiReserve        BigInt        // ذخیره عیدی و پاداش پایان سال
+  status             PayrollStatus @default(DRAFT)
+  paidAtJalali       String?
+}
+
+// -------------------------------------------------------------
+// Module 5: Performance Management (ارزیابی عملکرد و اهداف)
+// -------------------------------------------------------------
+model PerformanceGoal {
+  id              String   @id @default(uuid())
+  employeeId      String
+  employee        Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  title           String   // عنوان شاخص یا هدف (KPI / OKR)
+  targetMetric    String   // سنجه هدف (مثلا ۹۵ درصد رضایت یا ۱۰ پروژه)
+  currentProgress Int      @default(0) // درصد پیشرفت ۰ تا ۱۰۰
+  weight          Int      @default(20) // ضریب وزنی
+  deadlineJalali  String   // مهلت تحقق شمسی
+  score           Float?   // نمره پایانی مدیر
+}
+
+// -------------------------------------------------------------
+// Module 6: Learning & Development (آموزش و ماتریس مهارت‌ها)
+// -------------------------------------------------------------
+model TrainingCourse {
+  id               String   @id @default(uuid())
+  title            String   // عنوان دوره آموزشی
+  instructor       String   // نام مدرس
+  durationHours    Int      // طول دوره به ساعت
+  department       String   // جامعه هدف
+  status           String   @default("UPCOMING") // در حال برگزاری، پایان‌یافته
+  participantsCount Int     @default(0)
+}
+
+// -------------------------------------------------------------
+// Module 7: Onboarding & Offboarding (فرآیند ورود و خروج)
+// -------------------------------------------------------------
+model ChecklistItem {
+  id           String   @id @default(uuid())
+  employeeId   String
+  type         String   // ONBOARDING یا OFFBOARDING
+  title        String   // عنوان کار (تحویل لپتاپ، معرفی به تیم، تسویه حساب)
+  department   String   // واحد پیگیری‌کننده (فناوری اطلاعات، حراست، مالی)
+  dueDateJalali String
+  isCompleted  Boolean  @default(false)
+  completedAt  String?
+}

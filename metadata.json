@@ -1,0 +1,7 @@
+{
+  "name": "سامانه منابع انسانی سیلانه سبز",
+  "description": "اپلیکیشن مستقل غربالگری هوشمند رزومه مجهز به هوش مصنوعی با پردازش نامحدود، ارزیابی دپارتمان‌محور، آستانه‌های داینامیک و خروجی ساخت‌یافته",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

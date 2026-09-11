@@ -1,0 +1,27 @@
+# Render Blueprint (Infrastructure as Code)
+# Node.js Web Service on Render. Employees are now persisted to a Supabase
+# Postgres database via Prisma (server/db.ts, server/employeeRepo.ts).
+# DATABASE_URL must be set (as a Render dashboard secret, not committed here)
+# for real persistence — without it the app safely falls back to the
+# in-memory demo data so it never crashes on boot.
+
+services:
+  - type: web
+    name: hr-seylane-sabz
+    env: node
+    plan: starter
+    region: oregon
+    runtime: node
+    repo: https://github.com/omidadli/HR-seylane-sabz-
+    branch: main
+    autoDeploy: true
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: DATABASE_URL
+        sync: false

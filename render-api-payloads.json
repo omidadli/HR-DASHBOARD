@@ -1,0 +1,36 @@
+{
+  "note": "Use with Render REST API. First create DB, get connectionString, then create service with DATABASE_URL.",
+  "database_payload": {
+    "method": "POST",
+    "url": "https://api.render.com/v1/databases",
+    "headers": {"Authorization":"Bearer RENDER_API_KEY","Content-Type":"application/json"},
+    "body": {
+      "name": "hr-seylane-sabz-db",
+      "databaseName": "hr_seylane_db",
+      "user": "hr_seylane_user",
+      "plan": "starter",
+      "region": "oregon"
+    }
+  },
+  "service_payload": {
+    "method": "POST",
+    "url": "https://api.render.com/v1/services",
+    "headers": {"Authorization":"Bearer RENDER_API_KEY","Content-Type":"application/json"},
+    "body": {
+      "type": "web_service",
+      "name": "hr-seylane-sabz",
+      "repo": "https://github.com/omidadli/HR-seylane-sabz-",
+      "branch": "main",
+      "region": "oregon",
+      "plan": "starter",
+      "buildCommand": "npm install && npx prisma generate && npm run build",
+      "startCommand": "npm start",
+      "autoDeploy": "yes",
+      "envVars": [
+        {"key":"NODE_ENV","value":"production"},
+        {"key":"PORT","value":"10000"},
+        {"key":"DATABASE_URL","value":"<PASTE_DB_CONNECTION_STRING_HERE>"}
+      ]
+    }
+  }
+}
