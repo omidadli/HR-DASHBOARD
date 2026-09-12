@@ -130,7 +130,7 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
         <div className="flex-1 text-center sm:text-start flex flex-col gap-1.5 min-w-0">
           <div className="flex items-center justify-center sm:justify-between flex-wrap gap-2">
             <h2 className="text-base sm:text-lg font-bold text-text-1">
-              در حال تحلیل و غربالگری هوشمند رزومه‌ها
+              هوشا در حال تحلیل و غربالگری رزومه‌هاست
             </h2>
             <button
               type="button"
@@ -144,7 +144,7 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
           </div>
 
           <p className="text-xs text-text-3 truncate">
-            {statusText || 'سیستم در حال تحلیل دقیق سوابق و شایستگی‌های داوطلبان است…'}
+            {statusText || 'هوشا در حال تحلیل دقیق سوابق و شایستگی‌های داوطلبان است…'}
           </p>
 
           {currentEvaluatingName && (
@@ -198,7 +198,7 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
             <Zap className="w-4 h-4 shrink-0 text-text-3" />
           )}
           <div className="flex flex-col min-w-0">
-            <span className="font-bold">۲. تحلیل هوشمند موازی</span>
+            <span className="font-bold">۲. تحلیل موازی هوشا</span>
             <span className="text-[11px] text-text-3 tabular-nums">
               {toPersianDigits(processedCount)} از {toPersianDigits(totalCount)} رزومه
             </span>
@@ -246,7 +246,7 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
             {phase === 'evaluating' && activeEvaluatingNames && activeEvaluatingNames.length > 0 && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-brand bg-brand-soft/50 border border-brand/20 px-2 py-0.5 rounded-full mr-1.5">
                 <Loader2 className="w-2.5 h-2.5 animate-spin shrink-0" />
-                در حال پردازش هوشمند
+                هوشا در حال پردازش
               </span>
             )}
           </div>
@@ -301,7 +301,7 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
           <div className="flex items-center gap-2 text-xs font-bold text-text-2">
             <Loader2 className="w-3.5 h-3.5 text-brand animate-spin shrink-0" />
             <span>
-              در حال ارزیابی همزمان هوش مصنوعی ({toPersianDigits(activeEvaluatingNames.length)} اسلات موازی):
+              هوشا در حال ارزیابی همزمان ({toPersianDigits(activeEvaluatingNames.length)} اسلات موازی):
             </span>
           </div>
           <div className="flex flex-wrap gap-1.5">

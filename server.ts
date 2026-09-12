@@ -42,6 +42,17 @@ function recommendationForScore(score: number, u: JobUnderstanding): Recommendat
   return 'REJECT';
 }
 
+/**
+ * Multi-user scoping: the client sends its local account id as x-user-id.
+ * Sanitized to a safe, short token; '' when absent (legacy/shared access).
+ */
+function requestUserId(req: express.Request): string {
+  const raw = req.headers['x-user-id'];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof v !== 'string') return '';
+  return v.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+}
+
 async function startServer() {
   await store.initStore();
   const app = express();
@@ -99,6 +110,7 @@ async function startServer() {
         extraNotes: String(extraNotes || ''),
         understanding: understanding as JobUnderstanding,
         answers: (answers || {}) as ScreeningAnswers,
+        userId: requestUserId(req) || undefined,
       });
       res.json(batch);
     } catch (err: any) {
@@ -109,12 +121,18 @@ async function startServer() {
 
   app.get('/api/screening/batches', (req, res) => {
     const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 5));
-    res.json(store.listRecentBatches(limit));
+    // Scope "recent sessions" to the requester so users don't see each
+    // other's screening history.
+    res.json(store.listRecentBatches(limit, requestUserId(req) || undefined));
   });
 
   app.get('/api/screening/batches/:id', (req, res) => {
     const batch = store.getBatch(req.params.id);
-    if (!batch) return res.status(404).json({ error: 'نشست غربالگری یافت نشد' });
+    // An owned batch is only visible to its owner; unowned (legacy) batches
+    // stay shared.
+    if (!batch || (batch.userId && batch.userId !== requestUserId(req))) {
+      return res.status(404).json({ error: 'نشست غربالگری یافت نشد' });
+    }
     res.json({ batch, resumes: store.listBatchResumes(req.params.id) });
   });
 
@@ -123,13 +141,13 @@ async function startServer() {
     try {
       const batch = store.getBatch(req.params.id);
       if (!batch) return res.status(404).json({ error: 'نشست یافت نشد' });
-      const { fileName, extractedText, unjudgeableReason, fileBase64 } = req.body || {};
+      const { fileName, extractedText, unjudgeableReason, fileBase64, errorMessage } = req.body || {};
       if (!fileName) return res.status(400).json({ error: 'نام فایل الزامی است' });
 
       let evaluation: CandidateEvaluation | undefined;
       let reason: string | null = unjudgeableReason ? String(unjudgeableReason) : null;
 
-      if (!reason) {
+      if (!reason && !errorMessage) {
         const text = String(extractedText || '');
         const ext = String(fileName).split('.').pop()?.toLowerCase() || '';
         const mimeMap: Record<string, string> = {
@@ -139,7 +157,10 @@ async function startServer() {
           jpeg: 'image/jpeg',
           webp: 'image/webp',
         };
-        const mimeType = mimeMap[ext] || 'application/pdf';
+        // Multimodal (vision) is only valid for real PDF/image payloads — text
+        // formats (docx/txt/…) must not be sent to the vision path with a fake
+        // PDF mime type.
+        const mimeType = mimeMap[ext];
 
         evaluation = await evaluateResumeV2(
           batch.departmentName,
@@ -164,10 +185,32 @@ async function startServer() {
         unjudgeableReason: reason,
         fileBase64: typeof fileBase64 === 'string' ? fileBase64 : undefined,
         evaluation,
+        errorMessage: errorMessage ? String(errorMessage) : undefined,
       });
       res.json({ record, stats: store.getBatch(batch.id)?.stats });
     } catch (err: any) {
       console.error('evaluate failed:', err?.message);
+      // Keep the failed file visible in the results: persist an ERROR record
+      // (the store + results UI already support it) instead of letting it
+      // silently vanish from the batch. If persistence itself fails, fall back
+      // to the previous 500 response.
+      try {
+        const batch = store.getBatch(req.params.id);
+        const { fileName, extractedText, fileBase64 } = req.body || {};
+        if (batch && fileName) {
+          const record = await store.saveEvaluation({
+            batchId: batch.id,
+            fileName: String(fileName),
+            extractedText: String(extractedText || ''),
+            unjudgeableReason: null,
+            fileBase64: typeof fileBase64 === 'string' ? fileBase64 : undefined,
+            errorMessage: err?.message || 'خطا در تحلیل',
+          });
+          return res.json({ record, stats: store.getBatch(batch.id)?.stats });
+        }
+      } catch (saveErr: any) {
+        console.error('saving ERROR record failed:', saveErr?.message);
+      }
       res.status(500).json({ error: err?.message || 'خطا در ارزیابی رزومه' });
     }
   });
@@ -312,15 +355,16 @@ async function startServer() {
   });
 
   // ---------------- Talent bank ----------------
-  app.get('/api/bank/departments', (_req, res) => {
-    res.json({ departments: store.bankDepartmentCounts(), tags: store.bankTags() });
+  app.get('/api/bank/departments', (req, res) => {
+    const uid = requestUserId(req) || undefined;
+    res.json({ departments: store.bankDepartmentCounts(uid), tags: store.bankTags(uid) });
   });
 
   app.get('/api/bank/departments/:id/batches', (req, res) => {
     if (!DEPARTMENTS.some((d) => d.id === req.params.id)) {
       return res.status(404).json({ error: 'دپارتمان نامعتبر است' });
     }
-    res.json({ batches: store.departmentBankBatches(req.params.id) });
+    res.json({ batches: store.departmentBankBatches(req.params.id, requestUserId(req) || undefined) });
   });
 
   app.get('/api/bank/departments/:id/resumes', (req, res) => {
@@ -330,6 +374,7 @@ async function startServer() {
     const f = req.query;
     const rawTags = f.tags ? String(f.tags).split(',').map((t) => t.trim()).filter(Boolean) : undefined;
     const result = store.listBankResumes(req.params.id, {
+      userId: requestUserId(req) || undefined,
       query: f.query ? String(f.query) : undefined,
       minScore: f.minScore ? Number(f.minScore) : undefined,
       minYears: f.minYears ? Number(f.minYears) : undefined,
@@ -351,7 +396,7 @@ async function startServer() {
   });
 
   app.get('/api/bank/search', (req, res) => {
-    res.json({ items: store.globalBankSearch(String(req.query.q || '')) });
+    res.json({ items: store.globalBankSearch(String(req.query.q || ''), 20, requestUserId(req) || undefined) });
   });
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'مسیر API یافت نشد' }));
@@ -375,7 +420,9 @@ async function startServer() {
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
-  const PORT = 3000;
+  // PORT must come from the environment (Render/Cloud platforms inject it);
+  // render.yaml sets 10000, local dev falls back to 3000.
+  const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`دستیار غربالگری رزومه سیلانه سبز روی پورت ${PORT} آماده است.`);
     const secret = process.env.GEMINI_API_KEY?.trim() || '';

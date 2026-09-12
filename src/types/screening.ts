@@ -139,6 +139,8 @@ export interface BatchStats {
 
 export interface ScreeningBatch {
   id: string;
+  /** Owner user id (multi-user scoping). null/absent = legacy shared data. */
+  userId?: string | null;
   departmentId: string;
   departmentName: string;
   roleTitle: string;
@@ -161,6 +163,8 @@ export interface AnalysisHistoryEntry {
 export interface ResumeRecord {
   id: string;
   batchId: string;
+  /** Owner user id inherited from the batch (multi-user scoping). */
+  userId?: string | null;
   departmentId: string;
   departmentName: string;
   fileName: string;
@@ -266,6 +270,8 @@ export interface BankBatchOption {
 }
 
 export interface BankFilters {
+  /** Restrict results to resumes owned by this user (legacy null owner = shared). */
+  userId?: string;
   query?: string;
   minScore?: number;
   minYears?: number;

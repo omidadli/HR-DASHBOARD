@@ -17,7 +17,7 @@ export async function exportBatchToExcel(batch: ScreeningBatch, records: ResumeR
     { مورد: 'دپارتمان', مقدار: batch.departmentName },
     { مورد: 'عنوان شغلی', مقدار: batch.roleTitle || '—' },
     { مورد: 'تاریخ غربالگری', مقدار: batch.createdAtJalali },
-    { مورد: 'نگاه هوش مصنوعی به شغل', مقدار: batch.understanding.plainExplanation },
+    { مورد: 'نگاه هوشا به شغل', مقدار: batch.understanding.plainExplanation },
     { مورد: 'آستانه مصاحبه', مقدار: toPersianDigits(batch.understanding.thresholds.interview) },
     { مورد: 'آستانه بررسی', مقدار: toPersianDigits(batch.understanding.thresholds.review) },
     { مورد: 'کل رزومه‌ها', مقدار: toPersianDigits(batch.stats.total) },
@@ -53,7 +53,7 @@ export async function exportBatchToExcel(batch: ScreeningBatch, records: ResumeR
       'کمبودها': r.weaknesses.map((w) => w.point).join('؛ '),
       'در بانک رزومه': r.inBank ? 'بله' : 'خیر',
       'فایل': r.fileName,
-      'موتور تحلیل': r.engine === 'local' ? 'محلی (غیر هوشمند)' : r.engine === 'ai' ? 'هوش مصنوعی' : '—',
+      'موتور تحلیل': r.engine === 'local' ? 'محلی (غیر هوشمند)' : r.engine === 'ai' ? 'هوشا' : '—',
     }));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'نتایج کامل');
 

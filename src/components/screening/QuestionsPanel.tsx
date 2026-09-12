@@ -185,7 +185,7 @@ export const QuestionsPanel: React.FC<QuestionsPanelProps> = ({
           ))}
           <div className="flex items-center gap-2 text-xs text-info font-bold justify-center py-1">
             <Loader2 className="w-4 h-4 animate-spin" />
-            هوش مصنوعی در حال تدوین معیارهای ارزیابی این شغل است…
+            هوشا در حال تدوین معیارهای ارزیابی این شغل است…
           </div>
         </div>
       )}
