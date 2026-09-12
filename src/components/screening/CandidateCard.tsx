@@ -191,7 +191,7 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
           onClick={() => onRerun(record)}
           disabled={rerunning}
           className={`${actionBtn} flex-1 bg-surface-1 border-border-default text-text-1 hover:border-brand/40 hover:bg-brand-soft/30 hover:text-brand`}
-          title="بررسی مجدد با هوش مصنوعی"
+          title="بررسی مجدد با هوشا"
         >
           {rerunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand" /> : <RefreshCw className="w-3.5 h-3.5 text-text-2" />}
           بررسی مجدد
@@ -244,7 +244,7 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
       {record.bankSuggested && !record.inBank && (
         <div className="text-xs font-medium text-brand flex items-center gap-1.5 -mt-1 pt-1">
           <Sparkles className="w-3.5 h-3.5 text-brand" />
-          هوش مصنوعی نگهداری این رزومه در بانک را برای فرصت‌های آتی پیشنهاد می‌کند.
+          هوشا نگهداری این رزومه در بانک را برای فرصت‌های آتی پیشنهاد می‌کند.
         </div>
       )}
     </div>

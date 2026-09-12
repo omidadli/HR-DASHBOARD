@@ -41,6 +41,18 @@ function uid(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Multi-user visibility rule: when a userId is supplied, records owned by a
+ * different user are hidden. Records with no owner (created before accounts
+ * existed) stay shared, and requests without a user id see everything
+ * (backwards compatible).
+ */
+function ownerOk(owner: string | null | undefined, userId?: string): boolean {
+  if (!userId) return true;
+  if (!owner) return true;
+  return owner === userId;
+}
+
 function safeExt(fileName: string): string {
   const m = fileName.toLowerCase().match(/\.(pdf|docx|doc|txt|rtf|md|zip)$/);
   return m ? m[1] : 'bin';
@@ -109,10 +121,12 @@ export function createBatch(input: {
   extraNotes: string;
   understanding: JobUnderstanding;
   answers: ScreeningAnswers;
+  userId?: string;
 }): ScreeningBatch {
   const now = tehranNow();
   const batch: ScreeningBatch = {
     id: uid('bat'),
+    userId: input.userId || null,
     departmentId: input.departmentId,
     departmentName: input.departmentName,
     roleTitle: input.roleTitle,
@@ -133,8 +147,9 @@ export function getBatch(id: string): ScreeningBatch | null {
   return batches.get(id) || null;
 }
 
-export function listRecentBatches(limit = 5): ScreeningBatch[] {
+export function listRecentBatches(limit = 5, userId?: string): ScreeningBatch[] {
   return Array.from(batches.values())
+    .filter((b) => ownerOk(b.userId, userId))
     .sort((a, b) => b.createdAtISO.localeCompare(a.createdAtISO))
     .slice(0, limit);
 }
@@ -237,6 +252,7 @@ export async function saveEvaluation(input: {
   const record: ResumeRecord = {
     id,
     batchId: input.batchId,
+    userId: batch.userId || null,
     departmentId: batch.departmentId,
     departmentName: batch.departmentName,
     fileName: input.fileName,
@@ -369,20 +385,20 @@ export function removeFromBank(id: string): ResumeRecord | null {
   return rec;
 }
 
-export function bankDepartmentCounts(): BankDepartmentCount[] {
+export function bankDepartmentCounts(userId?: string): BankDepartmentCount[] {
   const counts = new Map<string, number>();
   for (const r of resumes.values()) {
-    if (r.inBank && !r.deleted && r.bankDepartmentId) {
+    if (r.inBank && !r.deleted && r.bankDepartmentId && ownerOk(r.userId, userId)) {
       counts.set(r.bankDepartmentId, (counts.get(r.bankDepartmentId) || 0) + 1);
     }
   }
   return DEPARTMENTS.map((d) => ({ id: d.id, name: d.name, count: counts.get(d.id) || 0 }));
 }
 
-export function bankTags(): string[] {
+export function bankTags(userId?: string): string[] {
   const set = new Set<string>();
   for (const r of resumes.values()) {
-    if (r.inBank && !r.deleted) {
+    if (r.inBank && !r.deleted && ownerOk(r.userId, userId)) {
       r.bankTags.forEach((t) => set.add(t));
       r.tags.forEach((t) => set.add(t));
     }
@@ -390,10 +406,10 @@ export function bankTags(): string[] {
   return Array.from(set).sort();
 }
 
-export function departmentBankBatches(departmentId: string): { id: string; roleTitle: string; createdAtJalali: string }[] {
+export function departmentBankBatches(departmentId: string, userId?: string): { id: string; roleTitle: string; createdAtJalali: string }[] {
   const map = new Map<string, { id: string; roleTitle: string; createdAtJalali: string }>();
   for (const r of resumes.values()) {
-    if (r.inBank && !r.deleted && r.bankDepartmentId === departmentId && r.batchId) {
+    if (r.inBank && !r.deleted && r.bankDepartmentId === departmentId && r.batchId && ownerOk(r.userId, userId)) {
       const b = batches.get(r.batchId);
       if (b && !map.has(b.id)) {
         map.set(b.id, {
@@ -412,7 +428,7 @@ export function listBankResumes(departmentId: string, filters: BankFilters): Pag
   const page = Math.max(1, filters.page || 1);
   const now = Date.now();
   let items = Array.from(resumes.values()).filter(
-    (r) => r.inBank && !r.deleted && r.bankDepartmentId === departmentId
+    (r) => r.inBank && !r.deleted && r.bankDepartmentId === departmentId && ownerOk(r.userId, filters.userId)
   );
 
   if (filters.query && filters.query.trim()) {
@@ -467,11 +483,11 @@ export function listBankResumes(departmentId: string, filters: BankFilters): Pag
   return { items: items.slice(start, start + pageSize), page: safePage, pageSize, total, totalPages };
 }
 
-export function globalBankSearch(query: string, limit = 20): ResumeRecord[] {
+export function globalBankSearch(query: string, limit = 20, userId?: string): ResumeRecord[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
   return Array.from(resumes.values())
-    .filter((r) => r.inBank && !r.deleted)
+    .filter((r) => r.inBank && !r.deleted && ownerOk(r.userId, userId))
     .filter((r) =>
       [
         r.candidateName,

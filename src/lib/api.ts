@@ -8,11 +8,18 @@ import type {
   ScreeningAnswers,
   ScreeningBatch,
 } from '../types/screening';
+import { getUserId } from './user';
+
+/** Header that scopes screening history & the talent bank to this device's user. */
+export function scopedHeaders(): Record<string, string> {
+  const id = getUserId();
+  return id ? { 'x-user-id': id } : {};
+}
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...scopedHeaders(), ...(init?.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((data as any)?.error || `خطای سرور (${res.status})`);
@@ -25,7 +32,7 @@ export async function checkHealth(): Promise<{ available: boolean; error?: strin
     if (!h.hasGeminiKey) {
       return {
         available: false,
-        error: 'کلید هوش مصنوعی (GEMINI_API_KEY) روی سرور تعریف نشده است.',
+        error: 'کلید GEMINI_API_KEY روی سرور تعریف نشده؛ هوشا فعلاً در دسترس نیست.',
       };
     }
     return { available: true };

@@ -137,7 +137,7 @@ export const AddToBankModal: React.FC<AddToBankModalProps> = ({
 
         <div>
           <label className="text-xs font-bold text-text-1 block mb-1.5">
-            برچسب‌ها <span className="text-text-3 font-normal">(پیشنهاد هوش مصنوعی قابل ویرایش)</span>
+            برچسب‌ها <span className="text-text-3 font-normal">(پیشنهاد هوشا، قابل ویرایش)</span>
           </label>
           <div className="flex flex-wrap gap-1.5 mb-2">
             {tags.map((t) => (

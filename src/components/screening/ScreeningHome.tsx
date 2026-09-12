@@ -130,7 +130,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
           برای کدام دپارتمان نیرو می‌خواهید؟
         </h1>
         <p className="text-xs sm:text-sm text-text-3 max-w-md leading-relaxed">
-          ابتدا دپارتمان را انتخاب کنید، چند اولویت ساده را مشخص نموده و رزومه‌ها را اضافه کنید؛ تحلیل با هوش مصنوعی.
+          ابتدا دپارتمان را انتخاب کنید، چند اولویت ساده را مشخص نموده و رزومه‌ها را اضافه کنید؛ تحلیل با هوشا.
         </p>
       </div>
 
@@ -228,7 +228,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
               value={extraNotes}
               onChange={(e) => setExtraNotes(e.target.value)}
               rows={3}
-              placeholder="هر نکته‌ای که می‌خواهید هوش مصنوعی بداند…"
+              placeholder="هر نکته‌ای که می‌خواهید هوشا بداند…"
               className="w-full p-3 rounded-control bg-surface-1 border border-border-default focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none text-xs resize-y placeholder:text-text-3"
             />
           )}
@@ -237,7 +237,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
             <div className="p-3.5 rounded-control bg-brand-soft border border-brand/20 text-xs text-text-2 leading-relaxed flex items-start gap-2">
               <Bot className="w-4 h-4 text-brand shrink-0 mt-0.5" />
               <div>
-                <span className="font-bold text-brand">تحلیل هوش مصنوعی از این موقعیت شغلی: </span>
+                <span className="font-bold text-brand">تحلیل هوشا از این موقعیت شغلی: </span>
                 <span>{understanding.plainExplanation}</span>
               </div>
             </div>

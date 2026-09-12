@@ -42,6 +42,17 @@ function recommendationForScore(score: number, u: JobUnderstanding): Recommendat
   return 'REJECT';
 }
 
+/**
+ * Multi-user scoping: the client sends its local account id as x-user-id.
+ * Sanitized to a safe, short token; '' when absent (legacy/shared access).
+ */
+function requestUserId(req: express.Request): string {
+  const raw = req.headers['x-user-id'];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof v !== 'string') return '';
+  return v.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+}
+
 async function startServer() {
   await store.initStore();
   const app = express();
@@ -99,6 +110,7 @@ async function startServer() {
         extraNotes: String(extraNotes || ''),
         understanding: understanding as JobUnderstanding,
         answers: (answers || {}) as ScreeningAnswers,
+        userId: requestUserId(req) || undefined,
       });
       res.json(batch);
     } catch (err: any) {
@@ -109,12 +121,18 @@ async function startServer() {
 
   app.get('/api/screening/batches', (req, res) => {
     const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 5));
-    res.json(store.listRecentBatches(limit));
+    // Scope "recent sessions" to the requester so users don't see each
+    // other's screening history.
+    res.json(store.listRecentBatches(limit, requestUserId(req) || undefined));
   });
 
   app.get('/api/screening/batches/:id', (req, res) => {
     const batch = store.getBatch(req.params.id);
-    if (!batch) return res.status(404).json({ error: 'نشست غربالگری یافت نشد' });
+    // An owned batch is only visible to its owner; unowned (legacy) batches
+    // stay shared.
+    if (!batch || (batch.userId && batch.userId !== requestUserId(req))) {
+      return res.status(404).json({ error: 'نشست غربالگری یافت نشد' });
+    }
     res.json({ batch, resumes: store.listBatchResumes(req.params.id) });
   });
 
@@ -337,15 +355,16 @@ async function startServer() {
   });
 
   // ---------------- Talent bank ----------------
-  app.get('/api/bank/departments', (_req, res) => {
-    res.json({ departments: store.bankDepartmentCounts(), tags: store.bankTags() });
+  app.get('/api/bank/departments', (req, res) => {
+    const uid = requestUserId(req) || undefined;
+    res.json({ departments: store.bankDepartmentCounts(uid), tags: store.bankTags(uid) });
   });
 
   app.get('/api/bank/departments/:id/batches', (req, res) => {
     if (!DEPARTMENTS.some((d) => d.id === req.params.id)) {
       return res.status(404).json({ error: 'دپارتمان نامعتبر است' });
     }
-    res.json({ batches: store.departmentBankBatches(req.params.id) });
+    res.json({ batches: store.departmentBankBatches(req.params.id, requestUserId(req) || undefined) });
   });
 
   app.get('/api/bank/departments/:id/resumes', (req, res) => {
@@ -355,6 +374,7 @@ async function startServer() {
     const f = req.query;
     const rawTags = f.tags ? String(f.tags).split(',').map((t) => t.trim()).filter(Boolean) : undefined;
     const result = store.listBankResumes(req.params.id, {
+      userId: requestUserId(req) || undefined,
       query: f.query ? String(f.query) : undefined,
       minScore: f.minScore ? Number(f.minScore) : undefined,
       minYears: f.minYears ? Number(f.minYears) : undefined,
@@ -376,7 +396,7 @@ async function startServer() {
   });
 
   app.get('/api/bank/search', (req, res) => {
-    res.json({ items: store.globalBankSearch(String(req.query.q || '')) });
+    res.json({ items: store.globalBankSearch(String(req.query.q || ''), 20, requestUserId(req) || undefined) });
   });
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'مسیر API یافت نشد' }));

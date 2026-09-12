@@ -18,7 +18,7 @@ interface StepItem {
 
 const STEPS: StepItem[] = [
   { id: 'home', num: 1, label: 'دپارتمان و رزومه‌ها', sublabel: 'انتخاب دپارتمان، سوال‌ها و بارگذاری' },
-  { id: 'processing', num: 2, label: 'پردازش و تحلیل', sublabel: 'استخراج، سنجش هوش مصنوعی و کالیبراسیون' },
+  { id: 'processing', num: 2, label: 'پردازش و تحلیل', sublabel: 'استخراج، سنجش هوشا و کالیبراسیون' },
   { id: 'results', num: 3, label: 'نتایج و اولویت‌بندی', sublabel: 'دسته‌بندی، کارنامه‌ها و بانک رزومه' },
 ];
 

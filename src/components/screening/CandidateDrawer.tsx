@@ -379,9 +379,9 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
             <div className="rounded-card border border-brand/20 bg-brand-soft/60 p-3.5 flex items-center justify-between gap-3 shadow-xs">
               <div className="flex items-center gap-2.5 flex-1">
                 <Sparkles className="w-4 h-4 text-brand shrink-0" />
-                <p className="text-xs font-medium text-text-2">
-                  هوش مصنوعی نگهداری این رزومه در بانک را برای فرصت‌های آتی پیشنهاد می‌کند.
-                </p>
+              <p className="text-xs font-medium text-text-2">
+                هوشا نگهداری این رزومه در بانک را برای فرصت‌های آتی پیشنهاد می‌کند.
+              </p>
               </div>
               <button
                 type="button"

@@ -149,7 +149,7 @@ export const MessageModal: React.FC<MessageModalProps> = ({ record, onClose, onM
         )}
 
         <textarea
-          value={loading ? 'در حال نگارش پیش‌نویس پیام با هوش مصنوعی…' : body}
+          value={loading ? 'هوشا در حال نگارش پیش‌نویس پیام است…' : body}
           onChange={(e) => setBody(e.target.value)}
           rows={9}
           disabled={loading}

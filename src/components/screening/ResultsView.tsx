@@ -310,7 +310,7 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         </div>
         <div>
           <div className="text-xs font-bold text-brand mb-0.5 flex items-center gap-1">
-            تحلیل هوش مصنوعی از این موقعیت شغلی
+            تحلیل هوشا از این موقعیت شغلی
           </div>
           <p className="text-xs text-text-2 leading-relaxed font-medium">{batch.understanding.plainExplanation}</p>
         </div>

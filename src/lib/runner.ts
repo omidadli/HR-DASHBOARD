@@ -158,7 +158,7 @@ export async function runScreeningBatch(
   }
 
   await Promise.all(Array.from({ length: EXTRACT_CONCURRENCY }, () => extractWorker()));
-  emit('استخراج محتوا با موفقیت به پایان رسید؛ آغاز تحلیل هوشمند…');
+  emit('استخراج محتوا با موفقیت به پایان رسید؛ آغاز تحلیل هوشا…');
 
   // ---- Step B: AI evaluation with 4 parallel workers ----
   currentPhase = 'evaluating';
@@ -177,7 +177,7 @@ export async function runScreeningBatch(
       activeTick++;
       const currentName = Array.from(activeEvaluating)[0];
       const stepText = microSteps[activeTick % microSteps.length];
-      emit(`در حال تحلیل هوشمند «${currentName}»…`, currentName, stepText);
+      emit(`هوشا در حال تحلیل «${currentName}»…`, currentName, stepText);
     }
   }, 400);
 
@@ -213,7 +213,7 @@ export async function runScreeningBatch(
 
       item.status = 'evaluating';
       activeEvaluating.add(item.name);
-      emit(`در حال تحلیل هوشمند «${item.name}»…`, item.name, microSteps[0]);
+      emit(`هوشا در حال تحلیل «${item.name}»…`, item.name, microSteps[0]);
 
       try {
         const base64 = item.file ? await fileToBase64(item.file) : undefined;
@@ -265,7 +265,7 @@ export async function runScreeningBatch(
       } finally {
         activeEvaluating.delete(item.name);
         processed++;
-        emit(`تحلیل هوشمند ${processed} از ${total} تمام شد…`, item.name);
+        emit(`تحلیل هوشا ${processed} از ${total} تمام شد…`, item.name);
       }
     }
   }

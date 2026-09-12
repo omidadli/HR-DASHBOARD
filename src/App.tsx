@@ -16,7 +16,9 @@ import { StepperHeader } from './components/screening/StepperHeader';
 import { BankHome } from './components/bank/BankHome';
 import { DepartmentBankView } from './components/bank/DepartmentBankView';
 import { SplashScreen } from './components/common/SplashScreen';
+import { WelcomeGate } from './components/common/WelcomeGate';
 import { playCompletionChime } from './lib/sound';
+import { getStoredUser, StoredUser } from './lib/user';
 
 type TopTab = 'screening' | 'bank';
 type ScreeningView = 'home' | 'processing' | 'results';
@@ -42,7 +44,10 @@ const EMPTY_PROGRESS: ScreeningProgressUpdate = {
 };
 
 export function App() {
-  const [showSplash, setShowSplash] = useState(true);
+  // Multi-user identity: returning users get هوشا's greeting splash;
+  // first-time visitors go through the welcome gate (typing + name form).
+  const [user, setUser] = useState<StoredUser | null>(() => getStoredUser());
+  const [showSplash, setShowSplash] = useState(() => Boolean(getStoredUser()));
   const [tab, setTab] = useState<TopTab>('screening');
   const [view, setView] = useState<ScreeningView>('home');
   const [bankView, setBankView] = useState<BankView>({ screen: 'home' });
@@ -58,7 +63,7 @@ export function App() {
     setProgress({
       ...EMPTY_PROGRESS,
       totalCount: payload.files.length,
-      statusText: 'هوش مصنوعی در حال آماده‌سازی تحلیل است…',
+      statusText: 'هوشا در حال آماده‌سازی تحلیل است…',
     });
     setView('processing');
 
@@ -84,14 +89,14 @@ export function App() {
       setBatchId(result.batchId);
       setView('results');
       playCompletionChime();
-      toast('تحلیل و غربالگری هوشمند رزومه‌ها با موفقیت به پایان رسید.', 'success');
+      toast('هوشا تحلیل و غربالگری رزومه‌ها را با موفقیت کامل کرد.', 'success');
       if (result.localCount > 0 && result.aiCount === 0) {
         toast(
-          'هوش مصنوعی در دسترس نبود؛ همه رزومه‌ها با موتور محلی (غیر هوشمند) تحلیل شدند. کلید/شبکه را بررسی کن.',
+          'هوشا در دسترس نبود؛ همه رزومه‌ها با موتور محلی (غیر هوشمند) تحلیل شدند. کلید/شبکه را بررسی کن.',
           'error'
         );
       } else if (result.localCount > 0) {
-        toast('برخی رزومه‌ها به‌دلیل شلوغی هوش مصنوعی با موتور محلی تحلیل شدند', 'info');
+        toast('برخی رزومه‌ها به‌دلیل شلوغی هوشا با موتور محلی تحلیل شدند', 'info');
       }
     } catch (err: any) {
       if (err?.name === 'AbortError' || String(err?.message || '').includes('Aborted')) {
@@ -122,6 +127,13 @@ export function App() {
     setProcessingError(null);
     setHomeNonce((n) => n + 1);
     setView('home');
+  };
+
+  // Welcome gate completed: store the user and remount home so the recent
+  // batches list refetches scoped to the new identity.
+  const handleRegistered = (u: StoredUser) => {
+    setUser(u);
+    setHomeNonce((n) => n + 1);
   };
 
   return (
@@ -217,7 +229,10 @@ export function App() {
       </footer>
 
       <Toaster />
-      {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
+      {showSplash && user && (
+        <SplashScreen userName={user.name} onComplete={() => setShowSplash(false)} />
+      )}
+      {!user && <WelcomeGate onComplete={handleRegistered} />}
     </div>
   );
 }

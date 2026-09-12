@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Library, Search, X, Inbox } from 'lucide-react';
 import { DEPARTMENTS } from '../../lib/departments';
-import { fetchBankDepartments } from '../../lib/api';
+import { fetchBankDepartments, scopedHeaders } from '../../lib/api';
 import { toPersianDigits } from '../../lib/normalizeFa';
 import type { BankDepartmentCount, ResumeRecord } from '../../types/screening';
 
@@ -35,7 +35,9 @@ export const BankHome: React.FC<BankHomeProps> = ({ onOpenDepartment, onOpenResu
     setSearching(true);
     const t = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/bank/search?q=${encodeURIComponent(q)}`);
+        const res = await fetch(`/api/bank/search?q=${encodeURIComponent(q)}`, {
+          headers: scopedHeaders(),
+        });
         const data = await res.json();
         setResults(data.items || []);
       } catch {
