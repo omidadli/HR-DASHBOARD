@@ -1,4 +1,8 @@
-# دستیار هوشمند غربالگری رزومه — هلدینگ سیلانه سبز
+# هوشا — دستیار هوشمند غربالگری رزومه هلدینگ سیلانه سبز
+
+**آدرس استقرار:** https://hosha.onrender.com &nbsp;•&nbsp;
+[راهنمای دیپلوی](./DEPLOYMENT.md) &nbsp;•&nbsp;
+[پرامپت ایجنت](./DEPLOY_PROMPT.md)
 
 اپلیکیشن وب فارسی و راست‌چین برای غربالگری ساده و دقیق رزومه‌ها با هوش مصنوعی Gemini.
 کارشناس منابع انسانی دپارتمان را انتخاب می‌کند، به چند سوال خیلی ساده (چک‌باکس/چیپ) جواب می‌دهد و رزومه‌ها را بارگذاری می‌کند؛ هوش مصنوعی همه را تحلیل کرده و در سه دسته **مصاحبه شود / بررسی شود / رد شود** اولویت‌بندی می‌کند. رزومه‌های منتخب قابل ذخیره در **بانک رزومه** دپارتمان‌محور هستند.
@@ -38,17 +42,22 @@
 استک: **React 19 + Vite + TypeScript + Tailwind v4 + Express (tsx) + @google/genai**، آیکون‌ها lucide-react، فونت Vazirmatn، خروجی اکسل با xlsx (بارگذاری پویا).
 
 ```
-server.ts                      # API های Express + میدلور Vite
+server.ts                      # API های Express + سرو فایل‌های dist (یا میدلور Vite در توسعه)
 server/screening-gemini.ts     # پاس صفر/یک/دو AI، موتور محلی، پیش‌نویس پیام، circuit breaker
 server/screening-store.ts      # ماندگاری JSON (data/screening-store.json) + ذخیره فایل رزومه‌ها
 server/tehran-time.ts          # تاریخ جلالی واقعی بر مبنای Asia/Tehran
 src/lib/extractText.ts         # استخراج متن PDF دومستونی / DOCX / TXT / بازگشایی ZIP
 src/lib/runner.ts              # صف پردازش سمت کلاینت (استخراج → ارزیابی همزمان ۲تایی → کالیبراسیون)
 src/lib/api.ts                 # کلاینت API
-src/lib/departments.ts         # فهرست ثابت ۱۲ دپارتمان
+src/lib/departments-data.ts    # داده خالص ۱۲ دپارتمان (مشترک بین سرور و کلاینت، بدون آیکون)
+src/lib/departments.ts         # همان فهرست + آیکون‌های lucide (فقط فرانت‌اند)
 src/components/screening/      # ویزارد غربالگری، نتایج، کارت، دراور، مودال‌ها
 src/components/bank/           # بانک رزومه
+render.yaml                    # Blueprint آمادهٔ Render (سرویس hosha)
 ```
+
+**خروجی بیلد:** `dist/` برای فرانت‌اند و `dist-server/server.cjs` برای سرور
+(جدا نگه داشته شده تا باندل سرور هرگز به‌عنوان فایل استاتیک در اینترنت سرو نشود).
 
 - **بدون دیتابیس:** وضعیت در `data/screening-store.json` اسنپ‌شات می‌شود و فایل اصلی رزومه‌ها در `data/resumes/<batchId>/` ذخیره می‌شود (دانلود و بررسی مجدد پس از ری‌استارت کار می‌کند).
 - APIها: `/api/screening/understand`، `/api/screening/batches`، `.../evaluate`، `.../calibrate`، `/api/resumes/:id/{rerun,bank,file}`، `/api/bank/departments/...`، `/api/messages/draft`.
@@ -56,20 +65,69 @@ src/components/bank/           # بانک رزومه
 ## اجرا
 
 ```bash
-npm install
-# کلید Gemini در .env (الگو: .env.example):
-#   GEMINI_API_KEY=...
-#   GEMINI_MODEL=gemini-2.5-flash   # اختیاری
-npm run dev      # http://localhost:3000
+npm install --include=dev
+cp .env.example .env
+# داخل .env فقط این الزامی است:
+#   GEMINI_API_KEY=AIza...        # کلید دائمی از https://aistudio.google.com/apikey
+#   GEMINI_MODEL=gemini-2.5-flash # اختیاری
 
-npm run build && npm start   # نسخه نهایی
+npm run dev      # حالت توسعه → http://localhost:3000
+
+npm run build && npm start   # نسخه نهایی (دقیقاً همان چیزی که روی Render اجرا می‌شود)
+```
+
+شبیه‌سازی کامل محیط Render روی کامپیوتر خودتان:
+
+```bash
+NODE_ENV=production PORT=10000 DATA_DIR=/tmp/hosha-data npm start
+curl http://localhost:10000/api/health
 ```
 
 ریست کامل داده‌ها: حذف پوشه `data/`.
 
+## دیپلوی روی Render — https://hosha.onrender.com
+
+پروژه با **Blueprint** آماده است؛ کافی است این لینک را باز کنید، کلید Gemini را
+وارد کنید و `Apply` را بزنید:
+
+```
+https://dashboard.render.com/blueprint/new?repo=https://github.com/omidadli/HR-DASHBOARD
+```
+
+| تنظیم | مقدار |
+| --- | --- |
+| Name / ساب‌دامین | `hosha` → `hosha.onrender.com` |
+| Runtime | Node (`NODE_VERSION=22.22.0`) |
+| Plan / Region | `free` / `oregon` |
+| Build | `npm install --include=dev --no-audit --no-fund && npm run build` |
+| Start | `npm start` |
+| Health check | `/api/health` |
+| متغیرهای محیطی | `NODE_ENV`، `NODE_VERSION`، `GEMINI_API_KEY` (دستی)، `MAX_BODY_MB`، `LOG_REQUESTS` |
+
+راهنمای کامل + عیب‌یابی: [`DEPLOYMENT.md`](./DEPLOYMENT.md)
+پرامپت آماده برای ایجنت (Claude Code / Cursor): [`DEPLOY_PROMPT.md`](./DEPLOY_PROMPT.md)
+
 ## محدودیت‌های شناخته‌شده
 
-- بدون احراز هویت؛ تک‌کاربره و مناسب استفاده داخلی منابع انسانی.
+- بدون احراز هویت؛ هویت کاربر فقط یک id در localStorage همان مرورگر است
+  (هر دستگاه/مرورگر، بانک رزومه و تاریخچهٔ خودش را می‌بیند) و مناسب استفادهٔ داخلی منابع انسانی است.
 - ارسال پیام از داخل اپ انجام نمی‌شود؛ متن ساخته و در واتساپ/پیامک/ایمیل باز می‌شود.
 - فایل‌های اسکن تصویری (بدون لایه متنی) قابل تحلیل نیستند و در بخش «غیرقابل‌ارزیابی» گزارش می‌شوند.
-- ماندگاری روی دیسک سرویس است؛ در استقرار ابری (Render) برای بقای داده پس از ری‌دیپلوی، دیسک مانت‌شده روی `./data` لازم است.
+- **ماندگاری داده در فضای ابری:** روی پلن `free` در Render فایل‌سیستم موقتی است، یعنی با
+  هر دیپلوی/ری‌استارت نتایج غربالگری، بانک رزومه و فایل اصلی رزومه‌ها پاک می‌شوند؛
+  همچنین سرویس پس از ۱۵ دقیقه بی‌کارگی می‌خوابد و اولین درخواست ۳۰ تا ۶۰ ثانیه
+  طول می‌کشد. برای ماندگاری واقعی، پلن `starter` + دیسک مانت‌شده و `DATA_DIR=/var/data`
+  لازم است (راهنما در [`DEPLOYMENT.md`](./DEPLOYMENT.md)).
+
+## متغیرهای محیطی
+
+| متغیر | الزامی | پیش‌فرض | توضیح |
+| --- | --- | --- | --- |
+| `GEMINI_API_KEY` | ✅ | — | کلید دائمی `AIza…`؛ بدون آن پرسش‌نامه و تحلیل هوشمند کار نمی‌کند |
+| `GEMINI_MODEL` | — | `gemini-3.8-flash` | با fallback خودکار به `gemini-2.5-flash` و `gemini-3.1-flash-lite` |
+| `PORT` | — | `3000` | روی Render خودش تزریق می‌شود (معمولاً `10000`) |
+| `NODE_ENV` | — | `development` | در Render باید `production` باشد تا پوشهٔ `dist/` سرو شود |
+| `DATA_DIR` | — | `./data` | مسیر اسنپ‌شات JSON و فایل رزومه‌ها (با دیسک دائمی: `/var/data`) |
+| `DIST_DIR` | — | `./dist` | مسیر فایل‌های بیلدشدهٔ فرانت‌اند |
+| `MAX_BODY_MB` | — | `64` | سقف اندازهٔ بدنهٔ JSON (رزومه‌ها base64 ارسال می‌شوند) |
+| `LOG_REQUESTS` | — | روشن | لاگ درخواست‌های API؛ با `false` خاموش می‌شود |

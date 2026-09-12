@@ -31,7 +31,7 @@ import {
   ScreeningAnswers,
   ScreeningQuestion,
 } from '../src/types/screening';
-import { getDepartment } from '../src/lib/departments';
+import { getDepartmentData as getDepartment } from '../src/lib/departments-data';
 import { normalizePersianText, toEnglishDigits } from '../src/lib/normalizeFa';
 
 function getGeminiClient(): GoogleGenAI {

@@ -20,12 +20,28 @@ import {
   ScreeningAnswers,
   ScreeningBatch,
 } from '../src/types/screening';
-import { DEPARTMENTS } from '../src/lib/departments';
+import { DEPARTMENTS_DATA } from '../src/lib/departments-data';
 import { tehranNow } from './tehran-time';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
+/**
+ * Where state lives. Override with the DATA_DIR environment variable so a
+ * persistent disk can be mounted in production (e.g. Render: DATA_DIR=/var/data).
+ * Render's free tier has an ephemeral filesystem — the directory still works,
+ * it just resets on every deploy/restart.
+ */
+function resolveDataDir(): string {
+  const fromEnv = process.env.DATA_DIR?.trim();
+  return fromEnv ? path.resolve(fromEnv) : path.join(process.cwd(), 'data');
+}
+
+const DATA_DIR = resolveDataDir();
 const STORE_FILE = path.join(DATA_DIR, 'screening-store.json');
 const RESUMES_DIR = path.join(DATA_DIR, 'resumes');
+
+/** Absolute directory holding the snapshot + uploaded resume files. */
+export function dataDir(): string {
+  return DATA_DIR;
+}
 
 interface Snapshot {
   batches: ScreeningBatch[];
@@ -35,6 +51,8 @@ interface Snapshot {
 let batches = new Map<string, ScreeningBatch>();
 let resumes = new Map<string, ResumeRecord>();
 let saveTimer: NodeJS.Timeout | null = null;
+let dirty = false;
+let writable = true;
 let initialized = false;
 
 function uid(prefix: string): string {
@@ -61,8 +79,24 @@ function safeExt(fileName: string): string {
 export async function initStore() {
   if (initialized) return;
   initialized = true;
+
+  // 1) Make sure the data directory exists and is writable. On hosts with a
+  //    read-only or ephemeral filesystem (Render free tier after a redeploy)
+  //    we keep working from memory and say so loudly in the logs.
   try {
     await fs.promises.mkdir(RESUMES_DIR, { recursive: true });
+    await fs.promises.access(DATA_DIR, fs.constants.W_OK);
+    writable = true;
+  } catch (err: any) {
+    writable = false;
+    console.error(
+      `[store] پوشه داده در دسترس/قابل‌نوشتن نیست (${DATA_DIR}): ${err?.message}. ` +
+        'داده‌ها فقط در حافظه نگه داشته می‌شوند و با ری‌استارت یا دیپلوی بعدی از بین می‌روند.'
+    );
+  }
+
+  // 2) Load the previous snapshot (if any).
+  try {
     const raw = await fs.promises.readFile(STORE_FILE, 'utf-8');
     const snap = JSON.parse(raw) as Snapshot;
     batches = new Map((snap.batches || []).map((b) => [b.id, b]));
@@ -75,23 +109,50 @@ export async function initStore() {
   }
 }
 
-function scheduleSave() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
+/** Write the snapshot to disk right now (atomic via tmp + rename). */
+async function persistNow(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
     saveTimer = null;
-    try {
-      await fs.promises.mkdir(DATA_DIR, { recursive: true });
-      const snap: Snapshot = {
-        batches: Array.from(batches.values()),
-        resumes: Array.from(resumes.values()),
-      };
-      const tmp = STORE_FILE + '.tmp';
-      await fs.promises.writeFile(tmp, JSON.stringify(snap), 'utf-8');
-      await fs.promises.rename(tmp, STORE_FILE);
-    } catch (err) {
-      console.error('[store] snapshot save failed:', err);
-    }
+  }
+  dirty = false;
+  try {
+    await fs.promises.mkdir(DATA_DIR, { recursive: true });
+    const snap: Snapshot = {
+      batches: Array.from(batches.values()),
+      resumes: Array.from(resumes.values()),
+    };
+    const tmp = STORE_FILE + '.tmp';
+    await fs.promises.writeFile(tmp, JSON.stringify(snap), 'utf-8');
+    await fs.promises.rename(tmp, STORE_FILE);
+  } catch (err: any) {
+    dirty = true; // keep the pending flag so a later flush can retry
+    console.error('[store] snapshot save failed:', err?.message || err);
+  }
+}
+
+function scheduleSave() {
+  dirty = true;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void persistNow();
   }, 400);
+  // Do not let a pending debounce keep the event loop alive during shutdown.
+  saveTimer.unref?.();
+}
+
+/**
+ * Persist any pending change immediately. Called on SIGTERM/SIGINT so a
+ * redeploy or scale-down never drops the last screening results.
+ */
+export async function flushStore(): Promise<void> {
+  if (saveTimer || dirty) await persistNow();
+}
+
+/** True when the store can write to disk (false on read-only filesystems). */
+export function isStoreWritable(): boolean {
+  return writable;
 }
 
 async function saveResumeFile(batchId: string, recordId: string, fileName: string, base64: string | undefined): Promise<string | null> {
@@ -406,7 +467,7 @@ export function bankDepartmentCounts(userId?: string): BankDepartmentCount[] {
       counts.set(r.bankDepartmentId, (counts.get(r.bankDepartmentId) || 0) + 1);
     }
   }
-  return DEPARTMENTS.map((d) => ({ id: d.id, name: d.name, count: counts.get(d.id) || 0 }));
+  return DEPARTMENTS_DATA.map((d) => ({ id: d.id, name: d.name, count: counts.get(d.id) || 0 }));
 }
 
 export function bankTags(userId?: string): string[] {
