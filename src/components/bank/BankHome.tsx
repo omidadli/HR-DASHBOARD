@@ -3,6 +3,7 @@ import { Library, Search, X, Inbox } from 'lucide-react';
 import { DEPARTMENTS } from '../../lib/departments';
 import { fetchBankDepartments, scopedHeaders } from '../../lib/api';
 import { toPersianDigits } from '../../lib/normalizeFa';
+import { CandidateAvatar } from '../common/CandidateAvatar';
 import type { BankDepartmentCount, ResumeRecord } from '../../types/screening';
 
 interface BankHomeProps {
@@ -111,9 +112,11 @@ export const BankHome: React.FC<BankHomeProps> = ({ onOpenDepartment, onOpenResu
                 }
                 className="w-full flex items-center gap-3 p-3 rounded-card bg-surface-1 border border-border-default hover:border-brand/50 text-right cursor-pointer shadow-xs transition-colors"
               >
-                <span className="w-10 h-10 rounded-full bg-brand-soft text-brand font-bold flex items-center justify-center text-xs shrink-0">
-                  {(r.candidateName?.trim()[0] || '؟') + (r.candidateName?.trim().split(/\s+/)[1]?.[0] || '')}
-                </span>
+                <CandidateAvatar
+                  name={r.candidateName}
+                  category={r.category}
+                  size="md"
+                />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-bold text-text-1 truncate">{r.candidateName || r.fileName}</div>
                   <div className="text-xs text-text-3 truncate mt-0.5">

@@ -48,34 +48,39 @@ export async function runScreeningBatch(
 
   const startTime = Date.now();
   let activeTick = 0;
+  let highWatermarkPercent = 0;
 
   const computeOverallPercent = (): number => {
     if (currentPhase === 'done') return 100;
     if (total <= 0) return 0;
 
+    let computed = 0;
     if (currentPhase === 'extracting') {
       const extRatio = Math.min(1, extractedCount / total);
-      return Math.min(15, Math.max(3, Math.round(extRatio * 15)));
-    }
-
-    if (currentPhase === 'evaluating') {
-      const completedRatio = processed / total;
+      computed = Math.min(15, Math.max(3, Math.round(extRatio * 15)));
+    } else if (currentPhase === 'evaluating') {
+      // Proportional completion across the 75% evaluation window
+      const completedRatio = Math.min(1, processed / total);
       const completedPart = completedRatio * 75;
-      const activeCount = activeEvaluating.size;
-      const itemWeight = 75 / total;
-      // In-flight active progression up to 85% of that item's slot
-      const inFlightRatio = Math.min(0.85, (activeTick % 10) * 0.09 + 0.1);
-      const activeBonus = activeCount > 0 ? inFlightRatio * itemWeight : 0;
 
-      const evalPct = 15 + completedPart + activeBonus;
-      return Math.min(90, Math.max(16, Math.round(evalPct)));
+      // Smooth monotonic asymptotic in-flight advance for active items (never oscillates backward)
+      const activeCount = Math.min(activeEvaluating.size, Math.max(0, total - processed));
+      if (activeCount > 0 && processed < total) {
+        const itemSlotWeight = 75 / total;
+        // Asymptotic progression up to 65% of an item's slot as ticks accumulate
+        const inFlightRatio = (1 - Math.exp(-activeTick * 0.06)) * 0.65;
+        const activeBonus = inFlightRatio * itemSlotWeight;
+        computed = Math.min(90, Math.round(15 + completedPart + activeBonus));
+      } else {
+        computed = Math.min(90, Math.round(15 + completedPart));
+      }
+    } else if (currentPhase === 'calibrating') {
+      computed = 94;
     }
 
-    if (currentPhase === 'calibrating') {
-      return 95;
-    }
-
-    return 0;
+    // Mathematical guarantee of monotonicity: progress never decreases
+    highWatermarkPercent = Math.max(highWatermarkPercent, computed);
+    return Math.min(highWatermarkPercent, 98);
   };
 
   const emit = (statusText: string, current?: string, subStatusText?: string) => {
@@ -136,8 +141,12 @@ export async function runScreeningBatch(
       emit(`در حال استخراج محتوا: ${item.name} (${extractedCount + 1} از ${total})`, item.name);
 
       if (item.file) {
-        const extraction = await extractResumeContent(item.file, item.name);
+        const [extraction, base64] = await Promise.all([
+          extractResumeContent(item.file, item.name),
+          fileToBase64(item.file).catch(() => undefined),
+        ]);
         item.extractedText = extraction.text;
+        (item as any).cachedBase64 = base64;
 
         if (extraction.isVisualDocument) {
           // Visual document (image or scanned PDF) - queue for Gemini native vision processing
@@ -216,7 +225,9 @@ export async function runScreeningBatch(
       emit(`هوشا در حال تحلیل «${item.name}»…`, item.name, microSteps[0]);
 
       try {
-        const base64 = item.file ? await fileToBase64(item.file) : undefined;
+        const base64 =
+          (item as any).cachedBase64 ||
+          (item.file ? await fileToBase64(item.file).catch(() => undefined) : undefined);
         const { record } = await evaluateResume({
           batchId: batch.id,
           fileName: item.name,
@@ -246,7 +257,9 @@ export async function runScreeningBatch(
         // Try to persist the failure as an ERROR record so the file stays
         // visible (and retryable) in the results instead of disappearing.
         try {
-          const base64 = item.file ? await fileToBase64(item.file) : undefined;
+          const base64 =
+            (item as any).cachedBase64 ||
+            (item.file ? await fileToBase64(item.file).catch(() => undefined) : undefined);
           const { record } = await evaluateResume({
             batchId: batch.id,
             fileName: item.name,

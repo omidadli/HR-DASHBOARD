@@ -136,6 +136,14 @@ async function startServer() {
     res.json({ batch, resumes: store.listBatchResumes(req.params.id) });
   });
 
+  app.delete('/api/screening/batches/:id', (req, res) => {
+    const ok = store.deleteBatch(req.params.id, requestUserId(req) || undefined);
+    if (!ok) {
+      return res.status(404).json({ error: 'نشست غربالگری یافت نشد' });
+    }
+    res.json({ ok: true });
+  });
+
   // ---------------- Evaluate one resume ----------------
   app.post('/api/screening/batches/:id/evaluate', async (req, res) => {
     try {
@@ -420,9 +428,8 @@ async function startServer() {
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
-  // PORT must come from the environment (Render/Cloud platforms inject it);
-  // render.yaml sets 10000, local dev falls back to 3000.
-  const PORT = Number(process.env.PORT) || 3000;
+  // Port 3000 is required for AI Studio reverse proxy ingress
+  const PORT = 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`دستیار غربالگری رزومه سیلانه سبز روی پورت ${PORT} آماده است.`);
     const secret = process.env.GEMINI_API_KEY?.trim() || '';

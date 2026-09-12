@@ -7,8 +7,9 @@ import {
   ScreeningAnswers,
   ScreeningBatch,
 } from '../../types/screening';
-import { checkHealth, fetchRecentBatches, fetchUnderstanding } from '../../lib/api';
+import { checkHealth, fetchRecentBatches, fetchUnderstanding, deleteBatch } from '../../lib/api';
 import { toPersianDigits } from '../../lib/normalizeFa';
+import { toast } from '../common/Toast';
 import { UploadZone } from './UploadZone';
 import { QuestionsPanel } from './QuestionsPanel';
 import { RecentBatches } from './RecentBatches';
@@ -46,7 +47,17 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
 
   useEffect(() => {
     checkHealth().then((h) => !h.available && setHealthError(h.error || ''));
-    fetchRecentBatches(5).then(setRecent).catch(() => {});
+    fetchRecentBatches(3).then(setRecent).catch(() => {});
+  }, []);
+
+  const handleDeleteBatch = useCallback(async (batchId: string) => {
+    try {
+      await deleteBatch(batchId);
+      setRecent((prev) => prev.filter((b) => b.id !== batchId));
+      toast('سابقه غربالگری با موفقیت حذف شد', 'success');
+    } catch (err: any) {
+      toast(err?.message || 'خطا در حذف سابقه غربالگری', 'error');
+    }
   }, []);
 
   const loadQuestions = useCallback(async (deptId: string, title: string, notes: string) => {
@@ -292,7 +303,7 @@ export const ScreeningHome: React.FC<ScreeningHomeProps> = ({ onStart, onOpenBat
       )}
 
       {/* Recent */}
-      <RecentBatches batches={recent} onOpen={onOpenBatch} />
+      <RecentBatches batches={recent} onOpen={onOpenBatch} onDelete={handleDeleteBatch} />
     </div>
   );
 };

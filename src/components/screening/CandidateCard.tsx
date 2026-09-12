@@ -15,6 +15,7 @@ import {
 import { ResumeRecord } from '../../types/screening';
 import { CATEGORY_META } from '../../lib/categories';
 import { toPersianDigits } from '../../lib/normalizeFa';
+import { CandidateAvatar } from '../common/CandidateAvatar';
 
 interface CandidateCardProps {
   record: ResumeRecord;
@@ -86,11 +87,11 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
               {toPersianDigits(rank)}
             </span>
           )}
-          <span
-            className={`w-10 h-10 rounded-full font-bold flex items-center justify-center text-xs shrink-0 border ${categoryTone}`}
-          >
-            {initial(record.candidateName)}
-          </span>
+          <CandidateAvatar
+            name={record.candidateName}
+            category={record.category}
+            size="md"
+          />
           <div className="min-w-0 flex flex-col gap-1">
             <span className="flex items-center gap-2 flex-wrap">
               <h3 className="text-sm font-bold text-text-1 truncate">{name}</h3>

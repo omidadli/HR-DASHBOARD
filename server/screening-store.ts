@@ -147,6 +147,20 @@ export function getBatch(id: string): ScreeningBatch | null {
   return batches.get(id) || null;
 }
 
+export function deleteBatch(id: string, userId?: string): boolean {
+  const b = batches.get(id);
+  if (!b) return false;
+  if (!ownerOk(b.userId, userId)) return false;
+  batches.delete(id);
+  for (const [rid, r] of resumes.entries()) {
+    if (r.batchId === id) {
+      resumes.delete(rid);
+    }
+  }
+  scheduleSave();
+  return true;
+}
+
 export function listRecentBatches(limit = 5, userId?: string): ScreeningBatch[] {
   return Array.from(batches.values())
     .filter((b) => ownerOk(b.userId, userId))

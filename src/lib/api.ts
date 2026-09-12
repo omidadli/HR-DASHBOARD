@@ -88,8 +88,12 @@ export function fetchBatch(
   return jsonFetch(`/api/screening/batches/${batchId}`);
 }
 
-export function fetchRecentBatches(limit = 5): Promise<ScreeningBatch[]> {
+export function fetchRecentBatches(limit = 3): Promise<ScreeningBatch[]> {
   return jsonFetch(`/api/screening/batches?limit=${limit}`);
+}
+
+export function deleteBatch(batchId: string): Promise<{ ok: boolean }> {
+  return jsonFetch(`/api/screening/batches/${batchId}`, { method: 'DELETE' });
 }
 
 export function rerunResume(id: string): Promise<{ record: ResumeRecord; stats: ScreeningBatch['stats'] }> {

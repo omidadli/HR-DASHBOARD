@@ -25,6 +25,7 @@ import { ResumeRecord } from '../../types/screening';
 import { CATEGORY_META } from '../../lib/categories';
 import { fileDownloadUrl } from '../../lib/api';
 import { toPersianDigits } from '../../lib/normalizeFa';
+import { CandidateAvatar } from '../common/CandidateAvatar';
 
 interface CandidateDrawerProps {
   record: ResumeRecord | null;
@@ -106,11 +107,11 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
         {/* Header */}
         <div className="p-4 sm:p-5 bg-surface-1 border-b border-border-default flex flex-col gap-3 shrink-0">
           <div className="flex items-start gap-3">
-            <span
-              className={`w-11 h-11 rounded-full font-bold flex items-center justify-center shrink-0 border ${categoryTone}`}
-            >
-              {(record.candidateName?.trim()[0] || '؟') + (record.candidateName?.trim().split(/\s+/)[1]?.[0] || '')}
-            </span>
+            <CandidateAvatar
+              name={record.candidateName}
+              category={record.category}
+              size="lg"
+            />
             <div className="flex-1 min-w-0">
               <h2 className="text-base font-bold text-text-1 truncate">
                 {record.candidateName || 'کاندید بدون نام'}

@@ -10,12 +10,10 @@ import {
   Clock,
   Zap,
   Layers,
-  Volume2,
 } from 'lucide-react';
 import { SilanehLogo } from '../common/SilanehLogo';
 import { ResumeFileItem, ScreeningProgressUpdate } from '../../types/screening';
 import { toPersianDigits } from '../../lib/normalizeFa';
-import { playCompletionChime } from '../../lib/sound';
 
 interface ProcessingViewProps {
   progress: ScreeningProgressUpdate;
@@ -76,6 +74,13 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
   // Smooth easing animation for progress bar
   const [animatedPct, setAnimatedPct] = useState(0);
 
+  // Reset progress when a brand new screening job starts
+  useEffect(() => {
+    if (phase === 'extracting' && processedCount === 0 && extractedCount === 0) {
+      setAnimatedPct(0);
+    }
+  }, [phase, processedCount, extractedCount]);
+
   useEffect(() => {
     if (phase === 'done') {
       setAnimatedPct(100);
@@ -84,13 +89,12 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
 
     const interval = setInterval(() => {
       setAnimatedPct((prev) => {
-        if (prev === targetPct) return prev;
-        if (prev < targetPct) {
-          const diff = targetPct - prev;
-          const step = Math.max(1, Math.ceil(diff * 0.3));
-          return Math.min(targetPct, prev + step);
-        }
-        return targetPct;
+        // Strict monotonicity: percentage must never regress backwards during screening
+        const target = Math.max(prev, targetPct);
+        if (prev >= target) return prev;
+        const diff = target - prev;
+        const step = Math.max(1, Math.ceil(diff * 0.25));
+        return Math.min(target, prev + step);
       });
     }, 40);
 
@@ -128,20 +132,9 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
         </div>
 
         <div className="flex-1 text-center sm:text-start flex flex-col gap-1.5 min-w-0">
-          <div className="flex items-center justify-center sm:justify-between flex-wrap gap-2">
-            <h2 className="text-base sm:text-lg font-bold text-text-1">
-              هوشا در حال تحلیل و غربالگری رزومه‌هاست
-            </h2>
-            <button
-              type="button"
-              onClick={() => playCompletionChime()}
-              title="آزمایش صدای اعلان پایان"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-control bg-surface-2 border border-border-default text-text-3 hover:text-brand text-xs font-bold cursor-pointer transition-colors"
-            >
-              <Volume2 className="w-3.5 h-3.5" />
-              <span>تست صدا</span>
-            </button>
-          </div>
+          <h2 className="text-base sm:text-lg font-bold text-text-1">
+            هوشا در حال تحلیل و غربالگری رزومه‌هاست
+          </h2>
 
           <p className="text-xs text-text-3 truncate">
             {statusText || 'هوشا در حال تحلیل دقیق سوابق و شایستگی‌های داوطلبان است…'}

@@ -15,7 +15,7 @@
  */
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import {
   AnalysisEngine,
   BatchStats,
@@ -152,20 +152,24 @@ async function generateWithFallback(
   const candidateModels = Array.from(
     new Set([primary, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'])
   );
-  const timeoutMs = config?.timeoutMs ?? 25_000;
+  const timeoutMs = config?.timeoutMs ?? 18_000;
 
   let lastError: any = null;
   for (const model of candidateModels) {
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        const thinkingConfig = model.includes('2.5')
+          ? { thinkingBudget: 0 }
+          : { thinkingLevel: ThinkingLevel.LOW };
+
         const call = client.models.generateContent({
           model,
           contents,
           config: {
             temperature: config?.temperature ?? 0.1,
             responseMimeType: config?.responseMimeType ?? 'application/json',
-            ...(model.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+            thinkingConfig,
           },
         });
         const timeout = new Promise<never>((_, reject) =>
@@ -858,7 +862,7 @@ ${normalized.slice(0, 8500)}
         }
       : prompt;
 
-    const raw = await generateWithFallback(contents, { temperature: 0.1, timeoutMs: 30_000 });
+    const raw = await generateWithFallback(contents, { temperature: 0.1, timeoutMs: 18_000 });
     const parsed = cleanAndParseJson<any>(raw, null);
     if (!parsed) throw new Error('malformed evaluation');
     return finalizeEvaluation(parsed, understanding, answers, 'ai');
