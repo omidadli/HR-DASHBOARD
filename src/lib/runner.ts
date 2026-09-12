@@ -243,6 +243,23 @@ export async function runScreeningBatch(
         }
       } catch (err: any) {
         if (signal?.aborted) throw err;
+        // Try to persist the failure as an ERROR record so the file stays
+        // visible (and retryable) in the results instead of disappearing.
+        try {
+          const base64 = item.file ? await fileToBase64(item.file) : undefined;
+          const { record } = await evaluateResume({
+            batchId: batch.id,
+            fileName: item.name,
+            extractedText: item.extractedText || '',
+            unjudgeableReason: null,
+            fileBase64: base64,
+            errorMessage: err?.message || 'خطا در تحلیل',
+          });
+          item.recordId = record.id;
+          item.category = record.category;
+        } catch {
+          // Server unreachable: fall back to the local-only error state.
+        }
         item.status = 'error';
         item.errorMessage = err?.message || 'خطا در تحلیل';
       } finally {

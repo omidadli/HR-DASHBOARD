@@ -123,13 +123,13 @@ async function startServer() {
     try {
       const batch = store.getBatch(req.params.id);
       if (!batch) return res.status(404).json({ error: 'نشست یافت نشد' });
-      const { fileName, extractedText, unjudgeableReason, fileBase64 } = req.body || {};
+      const { fileName, extractedText, unjudgeableReason, fileBase64, errorMessage } = req.body || {};
       if (!fileName) return res.status(400).json({ error: 'نام فایل الزامی است' });
 
       let evaluation: CandidateEvaluation | undefined;
       let reason: string | null = unjudgeableReason ? String(unjudgeableReason) : null;
 
-      if (!reason) {
+      if (!reason && !errorMessage) {
         const text = String(extractedText || '');
         const ext = String(fileName).split('.').pop()?.toLowerCase() || '';
         const mimeMap: Record<string, string> = {
@@ -139,7 +139,10 @@ async function startServer() {
           jpeg: 'image/jpeg',
           webp: 'image/webp',
         };
-        const mimeType = mimeMap[ext] || 'application/pdf';
+        // Multimodal (vision) is only valid for real PDF/image payloads — text
+        // formats (docx/txt/…) must not be sent to the vision path with a fake
+        // PDF mime type.
+        const mimeType = mimeMap[ext];
 
         evaluation = await evaluateResumeV2(
           batch.departmentName,
@@ -164,10 +167,32 @@ async function startServer() {
         unjudgeableReason: reason,
         fileBase64: typeof fileBase64 === 'string' ? fileBase64 : undefined,
         evaluation,
+        errorMessage: errorMessage ? String(errorMessage) : undefined,
       });
       res.json({ record, stats: store.getBatch(batch.id)?.stats });
     } catch (err: any) {
       console.error('evaluate failed:', err?.message);
+      // Keep the failed file visible in the results: persist an ERROR record
+      // (the store + results UI already support it) instead of letting it
+      // silently vanish from the batch. If persistence itself fails, fall back
+      // to the previous 500 response.
+      try {
+        const batch = store.getBatch(req.params.id);
+        const { fileName, extractedText, fileBase64 } = req.body || {};
+        if (batch && fileName) {
+          const record = await store.saveEvaluation({
+            batchId: batch.id,
+            fileName: String(fileName),
+            extractedText: String(extractedText || ''),
+            unjudgeableReason: null,
+            fileBase64: typeof fileBase64 === 'string' ? fileBase64 : undefined,
+            errorMessage: err?.message || 'خطا در تحلیل',
+          });
+          return res.json({ record, stats: store.getBatch(batch.id)?.stats });
+        }
+      } catch (saveErr: any) {
+        console.error('saving ERROR record failed:', saveErr?.message);
+      }
       res.status(500).json({ error: err?.message || 'خطا در ارزیابی رزومه' });
     }
   });
@@ -375,7 +400,9 @@ async function startServer() {
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
-  const PORT = 3000;
+  // PORT must come from the environment (Render/Cloud platforms inject it);
+  // render.yaml sets 10000, local dev falls back to 3000.
+  const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`دستیار غربالگری رزومه سیلانه سبز روی پورت ${PORT} آماده است.`);
     const secret = process.env.GEMINI_API_KEY?.trim() || '';

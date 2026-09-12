@@ -61,6 +61,7 @@ export async function evaluateResume(input: {
   extractedText: string;
   unjudgeableReason: string | null;
   fileBase64?: string;
+  errorMessage?: string;
 }): Promise<{ record: ResumeRecord; stats: ScreeningBatch['stats'] }> {
   return jsonFetch(`/api/screening/batches/${input.batchId}/evaluate`, {
     method: 'POST',
