@@ -1,23 +1,71 @@
-# Render Blueprint — دستیار غربالگری رزومه سیلانه سبز
-# داده‌ها روی دیسک سرویس (فایل JSON در پوشه data/) نگهداری می‌شوند؛
-# برای حفظ دائمی داده‌ها هنگام دیپلوی، یک دیسک مانت‌شده روی ./data لازم است.
+# =============================================================================
+#  هوشا (Hosha) — Render Blueprint
+#  دستیار هوشمند غربالگری رزومهٔ هلدینگ سیلانه سبز
+#
+#  این فایل «Infrastructure as Code» است: در داشبورد Render از مسیر
+#  New → Blueprint → انتخاب ریپو استفاده کنید تا سرویس زیر خودکار ساخته شود.
+#
+#  آدرس نهایی:  https://hosha.onrender.com
+#  (ساب‌دامین از نام سرویس گرفته می‌شود، پس name حتماً باید hosha بماند.)
+#
+#  ⚠️  پلن free:
+#     • فایل‌سیستم موقتی است → با هر دیپلوی/ری‌استارت، پوشه data/
+#       (نتایج غربالگری + فایل رزومه‌ها) پاک می‌شود.
+#     • بعد از ۱۵ دقیقه بی‌کارگی سرویس می‌خوابد و اولین درخواست
+#       حدود ۳۰ تا ۶۰ ثانیه طول می‌کشد (cold start).
+#
+#  🔁  ارتقا به پلن پولی (برای ماندگاری داده‌ها) — فقط سه تغییر:
+#     1) plan: starter
+#     2) بلوک disk: زیر را از حالت کامنت خارج کنید
+#     3) متغیر DATA_DIR=/var/data را اضافه کنید
+#     disk:
+#       name: hosha-data
+#       mountPath: /var/data
+#       sizeGB: 1
+# =============================================================================
 
 services:
   - type: web
-    name: seilaneh-resume-screener
-    env: node
-    plan: starter
-    region: oregon
+    name: hosha
     runtime: node
+    plan: free
+    region: oregon
     branch: main
     autoDeploy: true
-    buildCommand: npm install && npm run build
+
+    # نکته مهم: NODE_ENV=production باعث می‌شود npm به‌صورت پیش‌فرض
+    # devDependencies را نصب نکند؛ برای همین --include=dev صریحاً آمده است.
+    buildCommand: npm install --include=dev --no-audit --no-fund && npm run build
     startCommand: npm start
+
     healthCheckPath: /api/health
+
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: "10000"
+
+      # نسخه Node (هم‌زمان فایل .node-version هم در ریپو هست).
+      - key: NODE_VERSION
+        value: 22.22.0
+
+      # 🔑 تنها متغیری که باید دستی پر کنید: کلید Gemini.
+      # از https://aistudio.google.com/apikey یک کلید دائمی (با پیشوند AIza) بسازید.
       - key: GEMINI_API_KEY
         sync: false
+
+      # حداکثر اندازه بدنه JSON (رزومه‌ها base64 ارسال می‌شوند).
+      - key: MAX_BODY_MB
+        value: "64"
+
+      # لاگ درخواست‌های API در داشبورد Render.
+      - key: LOG_REQUESTS
+        value: "true"
+
+      # اختیاری — مدل پیش‌فرض Gemini (اگر خالی بماند، کد خودش
+      # gemini-3.8-flash را با fallback به 2.5-flash و 3.1-flash-lite انتخاب می‌کند):
+      # - key: GEMINI_MODEL
+      #   value: gemini-2.5-flash
+
+      # اختیاری — فقط روی پلن پولی با دیسک:
+      # - key: DATA_DIR
+      #   value: /var/data

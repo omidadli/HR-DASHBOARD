@@ -3,23 +3,36 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-export default defineConfig(() => {
-  return {
-    plugins: [react(), tailwindcss()],
-    resolve: {
-      alias: {
-        '@': path.resolve(__dirname, '.'),
-      },
+// `DISABLE_HMR=true` (used by AI Studio / low-CPU sandboxes) turns off HMR and
+// file watching so agent edits do not cause flickering reloads.
+const disableHmr = process.env.DISABLE_HMR === 'true';
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, '.'),
     },
-    server: {
-      host: '0.0.0.0',
-      // Allow proxied preview hosts (dev sandboxes / containers).
-      allowedHosts: true as const,
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modify — file watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
-    },
-  };
+  },
+  build: {
+    // Client bundle. The Express server bundle is built separately by esbuild
+    // into dist-server/ (see package.json → build:server) so it is never
+    // exposed as a static file.
+    outDir: 'dist',
+    emptyOutDir: true,
+    sourcemap: false,
+    reportCompressedSize: false,
+    chunkSizeWarningLimit: 1600,
+  },
+  server: {
+    host: '0.0.0.0',
+    // Allow proxied preview hosts (dev sandboxes / containers / Render previews).
+    allowedHosts: true as const,
+    hmr: !disableHmr,
+    watch: disableHmr ? null : {},
+  },
+  preview: {
+    host: '0.0.0.0',
+    allowedHosts: true as const,
+  },
 });

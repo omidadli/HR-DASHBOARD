@@ -16,6 +16,10 @@
     "moduleDetection": "force",
     "allowJs": true,
     "jsx": "react-jsx",
+    "types": [
+      "node",
+      "vite/client"
+    ],
     "paths": {
       "@/*": [
         "./*"
@@ -23,5 +27,17 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "src",
+    "server",
+    "server.ts",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-server",
+    "data"
+  ]
 }

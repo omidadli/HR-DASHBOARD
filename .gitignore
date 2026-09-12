@@ -1,9 +1,29 @@
+# dependencies
 node_modules/
-build/
+
+# build output
 dist/
+dist-server/
+build/
 coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
+server.js
+*.tsbuildinfo
+
+# runtime data (snapshots + uploaded resumes)
 data/
+
+# environment
+.env
+.env.*
+!.env.example
+
+# logs & OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
