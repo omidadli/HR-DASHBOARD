@@ -1,7 +1,22 @@
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
-import mammoth from 'mammoth';
-import JSZip from 'jszip';
 import { normalizePersianText } from './normalizeFa';
+
+/** Lazy loaded to avoid bloating initial bundle on page load */
+let mammothPromise: Promise<any> | null = null;
+function loadMammoth(): Promise<any> {
+  if (!mammothPromise) {
+    mammothPromise = import('mammoth').then((mod) => (mod as any).default ?? mod);
+  }
+  return mammothPromise;
+}
+
+let jszipPromise: Promise<any> | null = null;
+function loadJSZip(): Promise<any> {
+  if (!jszipPromise) {
+    jszipPromise = import('jszip').then((mod) => (mod as any).default ?? mod);
+  }
+  return jszipPromise;
+}
 
 export interface TextExtractionResult {
   text: string;
@@ -159,33 +174,74 @@ async function extractFromPdfWithCoordinates(buffer: ArrayBuffer): Promise<strin
         const rightCount = items.filter((it) => it.x > midX + 20).length;
         const isTwoColumn = leftCount > 15 && rightCount > 15;
 
+        const joinItems = (colItems: TextItemPos[]) => {
+          colItems.sort((a, b) => {
+            const yDiff = a.y - b.y;
+            if (Math.abs(yDiff) > 6) return yDiff;
+            return b.x - a.x;
+          });
+          let out = '';
+          for (let i = 0; i < colItems.length; i++) {
+            const cur = colItems[i];
+            const prev = colItems[i - 1];
+            if (!prev) {
+              out += cur.str;
+              continue;
+            }
+            const yDiff = Math.abs(cur.y - prev.y);
+            if (yDiff > 8) {
+              out += '\n' + cur.str;
+            } else {
+              const xDiff = Math.abs(cur.x - prev.x);
+              if (cur.str.startsWith(' ') || prev.str.endsWith(' ') || xDiff > 12) {
+                out += (cur.str.startsWith(' ') ? '' : ' ') + cur.str;
+              } else {
+                out += cur.str;
+              }
+            }
+          }
+          return out;
+        };
+
         let sortedText = '';
 
         if (isTwoColumn) {
           const rightItems = items.filter((it) => it.x >= midX - 20);
           const leftItems = items.filter((it) => it.x < midX - 20);
-
-          const sortColumn = (colItems: TextItemPos[]) => {
-            return colItems
-              .sort((a, b) => {
-                const yDiff = a.y - b.y;
-                if (Math.abs(yDiff) > 6) return yDiff;
-                return b.x - a.x;
-              })
-              .map((i) => i.str)
-              .join(' ');
-          };
-
-          const rightText = sortColumn(rightItems);
-          const leftText = sortColumn(leftItems);
+          const rightText = joinItems(rightItems);
+          const leftText = joinItems(leftItems);
           sortedText = `${rightText}\n\n${leftText}`;
         } else {
-          items.sort((a, b) => {
-            const yDiff = a.y - b.y;
-            if (Math.abs(yDiff) > 6) return yDiff;
-            return b.x - a.x;
-          });
-          sortedText = items.map((i) => i.str).join(' ');
+          sortedText = joinItems(items);
+        }
+
+        // Extract PDF annotations (links, email mailto, phone tel, whatsapp wa.me, etc.)
+        try {
+          const annotations = await page.getAnnotations();
+          const pageLinks: string[] = [];
+          for (const ann of annotations || []) {
+            const rawUrl = ann?.url || ann?.unsafeUrl || '';
+            if (!rawUrl) continue;
+            if (rawUrl.startsWith('mailto:')) {
+              const email = rawUrl.replace(/^mailto:/i, '').trim();
+              if (email) pageLinks.push(`ایمیل: ${email}`);
+            } else if (rawUrl.startsWith('tel:')) {
+              const phone = rawUrl.replace(/^tel:/i, '').trim();
+              if (phone) pageLinks.push(`تلفن: ${phone}`);
+            } else if (rawUrl.includes('wa.me/')) {
+              const wa = rawUrl.split('wa.me/')[1]?.replace(/[^0-9+]/g, '');
+              if (wa) pageLinks.push(`واتساپ / تلفن: ${wa}`);
+            } else if (rawUrl.includes('linkedin.com/in/')) {
+              pageLinks.push(`لینکدین: ${rawUrl}`);
+            } else if (/^https?:\/\//i.test(rawUrl)) {
+              pageLinks.push(`لینک: ${rawUrl}`);
+            }
+          }
+          if (pageLinks.length > 0) {
+            sortedText += `\n\n[لینک‌ها و اطلاعات تماس استخراج‌شده از این صفحه]:\n` + pageLinks.join('\n');
+          }
+        } catch {
+          /* ignore annotation extraction errors */
         }
 
         pageTexts.push(sortedText);
@@ -219,12 +275,13 @@ async function extractFromPdfWithCoordinates(buffer: ArrayBuffer): Promise<strin
  */
 async function extractFromDocx(buffer: ArrayBuffer): Promise<string> {
   try {
-    const result = await withTimeout(
+    const mammoth = await loadMammoth();
+    const result: any = await withTimeout(
       mammoth.extractRawText({ arrayBuffer: buffer.slice(0) }),
       15_000,
       'باز کردن فایل Word'
     );
-    if (result?.value && result.value.trim().length > 10) {
+    if (result?.value && typeof result.value === 'string' && result.value.trim().length > 10) {
       return result.value.trim();
     }
   } catch (mErr) {
@@ -240,8 +297,9 @@ async function extractFromDocx(buffer: ArrayBuffer): Promise<string> {
  */
 async function extractDocxViaZip(buffer: ArrayBuffer): Promise<string> {
   try {
+    const JSZip = await loadJSZip();
     const zip = new JSZip();
-    const loaded = await zip.loadAsync(buffer.slice(0));
+    const loaded: any = await zip.loadAsync(buffer.slice(0));
     const docXml = loaded.files['word/document.xml'];
     if (!docXml) return '';
     const xmlText = await docXml.async('string');
@@ -251,7 +309,7 @@ async function extractDocxViaZip(buffer: ArrayBuffer): Promise<string> {
       const matches = p.match(/<w:t[^>]*>(.*?)<\/w:t>/g);
       if (matches) {
         const line = matches
-          .map((m) => m.replace(/<[^>]+>/g, ''))
+          .map((m: string) => m.replace(/<[^>]+>/g, ''))
           .join('')
           .trim();
         if (line) lines.push(line);
@@ -414,8 +472,9 @@ export async function processUploadFiles(
     const ext = getExtension(f.name);
     if (ext === 'zip') {
       try {
+        const JSZip = await loadJSZip();
         const zip = new JSZip();
-        const loaded = await withTimeout(zip.loadAsync(f), 120_000, 'باز کردن فایل فشرده');
+        const loaded: any = await withTimeout(zip.loadAsync(f), 120_000, 'باز کردن فایل فشرده');
         const entries = Object.keys(loaded.files);
 
         // Filter valid resume entries

@@ -44,9 +44,8 @@ try {
       <App />
     </StrictMode>
   );
-  // The boot overlay is removed by App's mount effect (i.e. only once React has
-  // actually committed DOM). If that never happens, the watchdog in index.html
-  // turns the spinner into a readable Persian error after 20s.
+  // Immediately inform boot watcher that React has initialized
+  window.__hooshaBoot?.hide();
 } catch (err: any) {
   bootFailed(err?.message || String(err));
 }

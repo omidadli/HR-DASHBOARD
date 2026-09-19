@@ -180,6 +180,21 @@ export function rerunResume(
   return jsonFetch(`/api/resumes/${id}/rerun`, { method: 'POST' }, { timeoutMs: 150_000, ...opts });
 }
 
+export function uploadResumeFileAsync(
+  recordId: string,
+  fileName: string,
+  fileBase64: string
+): Promise<{ ok: boolean; filePath?: string | null }> {
+  return jsonFetch<{ ok: boolean; filePath?: string | null }>(
+    `/api/resumes/${recordId}/file`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ fileName, fileBase64 }),
+    },
+    { timeoutMs: 60_000 }
+  ).catch(() => ({ ok: false, filePath: null }));
+}
+
 export function deleteResume(
   id: string,
   opts: RequestOptions = {}
@@ -258,7 +273,8 @@ export function fetchBankResumes(
 }
 
 export function fileDownloadUrl(resumeId: string): string {
-  return `/api/resumes/${resumeId}/file`;
+  const uid = getUserId();
+  return uid ? `/api/resumes/${resumeId}/file?uid=${encodeURIComponent(uid)}` : `/api/resumes/${resumeId}/file`;
 }
 
 export function fileToBase64(file: File): Promise<string> {

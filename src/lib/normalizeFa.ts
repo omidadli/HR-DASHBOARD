@@ -33,7 +33,8 @@ export function formatFileSize(bytes: number): string {
 export function normalizePersianText(raw: string): string {
   if (!raw) return '';
 
-  return raw
+  const nfkc = raw.normalize('NFKC');
+  return nfkc
     // Arabic Yeh and Alef Maksura to Persian Ye
     .replace(/[\u064A\u0649]/g, 'ی')
     // Arabic Kaf to Persian Ke

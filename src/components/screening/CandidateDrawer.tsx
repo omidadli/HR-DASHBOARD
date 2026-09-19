@@ -20,10 +20,11 @@ import {
   BookmarkPlus,
   Trash2,
   BookmarkCheck,
+  Loader2,
 } from 'lucide-react';
 import { ResumeRecord } from '../../types/screening';
 import { CATEGORY_META } from '../../lib/categories';
-import { fileDownloadUrl } from '../../lib/api';
+import { fileDownloadUrl, scopedHeaders } from '../../lib/api';
 import { toPersianDigits } from '../../lib/normalizeFa';
 import { CandidateAvatar } from '../common/CandidateAvatar';
 
@@ -62,6 +63,8 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
   onRemoveBank,
   onDelete,
 }) => {
+  const [downloading, setDownloading] = React.useState(false);
+
   useEffect(() => {
     if (!record) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -72,6 +75,35 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
       document.body.style.overflow = '';
     };
   }, [record, onClose]);
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!record || !record.filePath || downloading) return;
+    setDownloading(true);
+    try {
+      const url = fileDownloadUrl(record.id);
+      const res = await fetch(url, {
+        headers: scopedHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error('خطا در دریافت فایل');
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = record.fileName || 'resume.pdf';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+    } catch (err) {
+      console.warn('Blob download failed, using direct navigation:', err);
+      window.location.href = fileDownloadUrl(record.id);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   if (!record) return null;
   const rec = record.recommendation;
@@ -347,13 +379,20 @@ export const CandidateDrawer: React.FC<CandidateDrawerProps> = ({
               </div>
             ) : null}
             {record.filePath && (
-              <a
-                href={fileDownloadUrl(record.id)}
-                className="self-start inline-flex items-center gap-1.5 text-xs font-bold text-brand hover:underline pt-1"
+              <button
+                type="button"
+                id="btn-download-candidate-resume"
+                onClick={handleDownload}
+                disabled={downloading}
+                className="self-start inline-flex items-center gap-1.5 text-xs font-bold text-brand hover:underline pt-1 cursor-pointer disabled:opacity-50"
               >
-                <FileDown className="w-4 h-4" />
-                دانلود فایل اصلی رزومه
-              </a>
+                {downloading ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-brand" />
+                ) : (
+                  <FileDown className="w-4 h-4 text-brand" />
+                )}
+                <span>{downloading ? 'در حال دریافت فایل...' : 'دانلود فایل اصلی رزومه'}</span>
+              </button>
             )}
           </section>
 

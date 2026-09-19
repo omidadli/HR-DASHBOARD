@@ -68,22 +68,101 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 14px;
+        gap: 16px;
         background: #f6f8f6;
         z-index: 9999;
         text-align: center;
         padding: 24px;
+        direction: rtl;
+        transition: opacity 0.3s ease-out;
       }
+      #boot-screen.boot-fade-out {
+        opacity: 0;
+        pointer-events: none;
+      }
+      /* First visit professional design */
+      .boot-logo-card {
+        position: relative;
+        padding: 14px 18px;
+        background: rgba(255, 255, 255, 0.95);
+        border: 1px solid rgba(0, 200, 123, 0.28);
+        border-radius: 20px;
+        box-shadow: 0 12px 36px -6px rgba(0, 200, 123, 0.25);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .boot-logo-glow {
+        position: absolute;
+        inset: -8px;
+        background: rgba(5, 229, 144, 0.15);
+        filter: blur(14px);
+        border-radius: 28px;
+        z-index: -1;
+        animation: boot-pulse 2.4s ease-in-out infinite alternate;
+      }
+      .boot-logo-svg {
+        height: 60px;
+        width: auto;
+        display: block;
+      }
+      .boot-typing-box {
+        min-height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+        color: #1a2520;
+      }
+      .boot-typing-cursor {
+        color: #00c87b;
+        font-weight: 700;
+        animation: boot-blink 0.8s step-start infinite;
+      }
+      .boot-progress-wrap {
+        width: 170px;
+        height: 4px;
+        background: #e3e8e4;
+        border-radius: 999px;
+        overflow: hidden;
+        margin-top: 4px;
+      }
+      .boot-progress-bar {
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, #05e590, #00c87b, #00af6b);
+        border-radius: 999px;
+        animation: boot-progress-shimmer 1.5s ease-in-out infinite;
+      }
+      @keyframes boot-pulse {
+        0% { opacity: 0.5; transform: scale(0.96); }
+        100% { opacity: 1; transform: scale(1.04); }
+      }
+      @keyframes boot-blink {
+        50% { opacity: 0; }
+      }
+      @keyframes boot-progress-shimmer {
+        0% { transform: translateX(100%); }
+        100% { transform: translateX(-100%); }
+      }
+      /* Returning user lightweight ring */
       #boot-screen .boot-ring {
-        width: 34px; height: 34px;
+        width: 32px; height: 32px;
         border: 3px solid #d2f9e7;
         border-top-color: #00c87b;
         border-radius: 50%;
         animation: boot-spin 0.9s linear infinite;
       }
-      #boot-screen .boot-text { font-size: 13px; font-weight: 700; color: #4a554f; }
+      #boot-screen .boot-text {
+        font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        color: #4a554f;
+      }
       @keyframes boot-spin { to { transform: rotate(360deg); } }
-      #boot-screen.boot-hidden { display: none; }
 
       /* Shown instead of a silent blank page when JS/CSS cannot run. */
       #boot-fatal {
@@ -138,11 +217,8 @@
   <body class="bg-surface-0 text-text-1 font-sans antialiased selection:bg-brand/20 selection:text-brand min-h-screen">
     <div id="root"></div>
 
-    <!-- First paint while the JS bundle downloads: never a blank page. -->
-    <div id="boot-screen">
-      <div class="boot-ring"></div>
-      <div class="boot-text">در حال بارگذاری هوشا…</div>
-    </div>
+    <!-- First paint while the JS bundle downloads: professional branding for first visit, subtle for returning -->
+    <div id="boot-screen"></div>
 
     <!-- Visible failure surface instead of an endless white screen. -->
     <div id="boot-fatal">
@@ -164,13 +240,88 @@
         var fatal = document.getElementById('boot-fatal');
         var detail = document.getElementById('boot-fatal-detail');
         var failed = false;
+        var watchdogTimer = null;
+
+        var isFirstVisit = false;
+        try {
+          var stored = localStorage.getItem('seilaneh.app.user.v1');
+          isFirstVisit = !stored;
+        } catch (e) {
+          isFirstVisit = true;
+        }
+
+        if (boot) {
+          if (isFirstVisit) {
+            boot.innerHTML =
+              '<div class="boot-logo-card">' +
+                '<div class="boot-logo-glow"></div>' +
+                '<svg viewBox="0 0 500 360" fill="none" class="boot-logo-svg" style="aspect-ratio: 500/360;">' +
+                  '<defs>' +
+                    '<linearGradient id="bootNeonGrad" x1="14" y1="100" x2="476" y2="360" gradientUnits="userSpaceOnUse">' +
+                      '<stop offset="0%" stop-color="#05E590" />' +
+                      '<stop offset="45%" stop-color="#00C87B" />' +
+                      '<stop offset="100%" stop-color="#00AF6B" />' +
+                    '</linearGradient>' +
+                    '<linearGradient id="bootDropGrad" x1="255" y1="65" x2="255" y2="200" gradientUnits="userSpaceOnUse">' +
+                      '<stop offset="0%" stop-color="#05E590" />' +
+                      '<stop offset="100%" stop-color="#00BA73" />' +
+                    '</linearGradient>' +
+                  '</defs>' +
+                  '<path d="M 195 130 C 200 102, 218 92, 238 98 C 255 104, 270 115, 305 138 L 285 152 C 260 134, 238 124, 218 126 Z" fill="#009E60" />' +
+                  '<path d="M 14 275 C 85 195, 165 155, 230 152 C 255 152, 280 156, 310 162 C 370 144, 425 124, 476 102 C 420 165, 350 250, 290 360 C 235 285, 120 270, 14 275 Z" fill="url(#bootNeonGrad)" />' +
+                  '<path d="M 230 152 L 290 360" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" opacity="0.9" />' +
+                  '<path d="M 255 65 C 240 105, 205 150, 205 185 C 205 215, 227 238, 255 238 C 283 238, 305 215, 305 185 C 305 150, 270 105, 255 65 Z" fill="url(#bootDropGrad)" />' +
+                  '<path d="M 235 150 C 230 165, 232 185, 240 195 C 242 198, 238 202, 235 200 C 225 188, 222 165, 228 148 C 230 145, 236 146, 235 150 Z" fill="#FFFFFF" opacity="0.85" />' +
+                '</svg>' +
+              '</div>' +
+              '<div class="boot-typing-box">' +
+                '<span id="boot-typing-text"></span><span class="boot-typing-cursor">|</span>' +
+              '</div>' +
+              '<div class="boot-progress-wrap">' +
+                '<div class="boot-progress-bar"></div>' +
+              '</div>';
+
+            var textMsg = 'به هوشا خوش آمدید تا لحظاتی دیگر وارد می‌شوید';
+            var typingEl = document.getElementById('boot-typing-text');
+            var idx = 0;
+            function runTypewriter() {
+              if (typingEl && idx < textMsg.length) {
+                typingEl.textContent += textMsg.charAt(idx);
+                idx++;
+                setTimeout(runTypewriter, 36);
+              }
+            }
+            setTimeout(runTypewriter, 120);
+          } else {
+            boot.innerHTML =
+              '<div class="boot-ring"></div>' +
+              '<div class="boot-text">در حال بارگذاری هوشا…</div>';
+          }
+        }
 
         function hideBoot() {
-          if (boot && boot.parentNode) boot.parentNode.removeChild(boot);
+          if (watchdogTimer) {
+            clearTimeout(watchdogTimer);
+            watchdogTimer = null;
+          }
+          if (boot) {
+            boot.classList.add('boot-fade-out');
+            setTimeout(function () {
+              if (boot.parentNode) boot.parentNode.removeChild(boot);
+            }, 280);
+          }
         }
+
         function showFatal(message) {
+          // If React has already mounted or boot succeeded, never show fatal error
+          var root = document.getElementById('root');
+          if (root && root.childElementCount > 0) return;
           if (failed) return;
           failed = true;
+          if (watchdogTimer) {
+            clearTimeout(watchdogTimer);
+            watchdogTimer = null;
+          }
           hideBoot();
           if (detail) detail.textContent = String(message || 'خطای نامشخص');
           if (fatal) fatal.className = 'boot-shown';
@@ -191,13 +342,13 @@
           showFatal((reason && (reason.message || reason)) || 'خطای ناشناخته');
         });
 
-        // Hard watchdog: if React never mounted, say so instead of spinning forever.
-        setTimeout(function () {
+        // Safe watchdog: only fires after 60s if React completely failed to mount.
+        watchdogTimer = setTimeout(function () {
           var root = document.getElementById('root');
           if (!root || root.childElementCount === 0) {
-            showFatal('بارگذاری برنامه بیش از حد طول کشید. اتصال اینترنت را بررسی کنید.');
+            showFatal('بارگذاری برنامه بیش از حد طول کشید. لطفاً اتصال اینترنت را بررسی یا صفحه را مجدداً بارگذاری کنید.');
           }
-        }, 20000);
+        }, 60000);
       })();
     </script>
 

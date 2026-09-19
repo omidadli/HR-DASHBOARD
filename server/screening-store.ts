@@ -42,15 +42,13 @@ function uid(prefix: string): string {
 }
 
 /**
- * Multi-user visibility rule: when a userId is supplied, records owned by a
- * different user are hidden. Records with no owner (created before accounts
- * existed) stay shared, and requests without a user id see everything
- * (backwards compatible).
+ * Multi-user visibility rule:
+ * Users only see their own screening batches and talent bank candidates.
+ * Records without an owner or owned by another user are never displayed.
  */
 function ownerOk(owner: string | null | undefined, userId?: string): boolean {
-  if (!userId) return true;
-  if (!owner) return true;
-  return owner === userId;
+  if (!userId) return false;
+  return Boolean(owner && owner === userId);
 }
 
 function safeExt(fileName: string): string {
@@ -385,6 +383,21 @@ export function markMessageSent(id: string): ResumeRecord | null {
   rec.lastMessagedAtJalali = tehranNow().jalaliString;
   scheduleSave();
   return rec;
+}
+
+export async function attachResumeFile(
+  id: string,
+  fileName: string,
+  base64: string
+): Promise<string | null> {
+  const rec = resumes.get(id);
+  if (!rec) return null;
+  const filePath = await saveResumeFile(rec.batchId, rec.id, fileName, base64);
+  if (filePath) {
+    rec.filePath = filePath;
+    scheduleSave();
+  }
+  return filePath;
 }
 
 // ---------------- Talent bank ----------------

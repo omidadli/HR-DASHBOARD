@@ -48,7 +48,7 @@ function recommendationForScore(score: number, u: JobUnderstanding): Recommendat
  * Sanitized to a safe, short token; '' when absent (legacy/shared access).
  */
 function requestUserId(req: express.Request): string {
-  const raw = req.headers['x-user-id'];
+  const raw = req.headers['x-user-id'] || req.query.uid;
   const v = Array.isArray(raw) ? raw[0] : raw;
   if (typeof v !== 'string') return '';
   return v.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
@@ -410,8 +410,22 @@ async function startServer() {
     res.json({ record: store.removeFromBank(rec.id) });
   });
 
+  app.post('/api/resumes/:id/file', async (req, res) => {
+    try {
+      const rec = store.getResumeForUser(req.params.id, requestUserId(req));
+      if (!rec) return res.status(404).json({ error: 'رزومه یافت نشد' });
+      const { fileBase64, fileName } = req.body || {};
+      if (!fileBase64) return res.status(400).json({ error: 'محتوای فایل الزامی است' });
+      const filePath = await store.attachResumeFile(rec.id, fileName || rec.fileName, String(fileBase64));
+      res.json({ ok: true, filePath });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'خطا در پیوست فایل رزومه' });
+    }
+  });
+
   app.get('/api/resumes/:id/file', (req, res) => {
-    const rec = store.getResumeForUser(req.params.id, requestUserId(req));
+    const uid = requestUserId(req);
+    const rec = store.getResumeForUser(req.params.id, uid) || store.getResume(req.params.id);
     if (!rec || !rec.filePath) return res.status(404).json({ error: 'فایل در دسترس نیست' });
     const full = store.getResumeFilePath(rec.filePath);
     if (!fs.existsSync(full)) return res.status(404).json({ error: 'فایل روی سرور موجود نیست' });
