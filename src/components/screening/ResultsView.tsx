@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Award,
   Bot,
@@ -11,28 +11,21 @@ import {
   Search,
   XCircle,
   CheckCircle2,
+  ClipboardCheck,
 } from 'lucide-react';
 import { SilanehLogo } from '../common/SilanehLogo';
 import {
   Recommendation,
-  ResumeCategory,
   ResumeRecord,
   ScreeningBatch,
 } from '../../types/screening';
-import {
-  deleteResume,
-  fetchBatch,
-  removeFromBank,
-  rerunResume,
-} from '../../lib/api';
+import { fetchBatch, rerunResume } from '../../lib/api';
 import { exportBatchToExcel } from '../../lib/excelExport';
 import { toPersianDigits } from '../../lib/normalizeFa';
-import { CATEGORY_META, UNJUDGEABLE_META } from '../../lib/categories';
+import { CATEGORY_META } from '../../lib/categories';
+import { emitDecisionsChanged } from '../../lib/decisions';
 import { CandidateCard } from './CandidateCard';
-import { CandidateDrawer } from './CandidateDrawer';
-import { MessageModal } from './MessageModal';
-import { AddToBankModal } from './AddToBankModal';
-import { ConfirmDialog } from '../common/Modal';
+import { useResumeWorkspace } from './useResumeWorkspace';
 import { Pagination } from '../common/Pagination';
 import { toast } from '../common/Toast';
 
@@ -41,11 +34,11 @@ const PAGE_SIZE = 10;
 interface ResultsViewProps {
   batchId: string;
   onNewScreening: () => void;
+  /** Opens the «رزومه‌های تایید/رد شده» workspace, scoped to this session's position. */
+  onOpenDecisions?: (scope: { departmentId: string; roleTitle: string }) => void;
 }
 
-const TABS: Recommendation[] = ['INTERVIEW', 'REVIEW', 'REJECT'];
-
-export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreening }) => {
+export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreening, onOpenDecisions }) => {
   const [batch, setBatch] = useState<ScreeningBatch | null>(null);
   const [records, setRecords] = useState<ResumeRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,27 +47,48 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
   const [tab, setTab] = useState<Recommendation>('INTERVIEW');
   const [pages, setPages] = useState<Record<string, number>>({ INTERVIEW: 1, REVIEW: 1, REJECT: 1 });
   const [showUnjudgeable, setShowUnjudgeable] = useState(false);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
-  const [drawerRecord, setDrawerRecord] = useState<ResumeRecord | null>(null);
-  const [messageRecord, setMessageRecord] = useState<ResumeRecord | null>(null);
-  const [bankRecord, setBankRecord] = useState<ResumeRecord | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ResumeRecord | null>(null);
-  const [rerunningId, setRerunningId] = useState<string | null>(null);
+  const replaceRecord = useCallback((updated: ResumeRecord) => {
+    setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+  }, []);
 
-  const load = React.useCallback(async () => {
+  const removeRecord = useCallback((id: string) => {
+    setRecords((prev) => prev.filter((r) => r.id !== id));
+  }, []);
+
+  const reloadBatch = useCallback(() => {
+    fetchBatch(batchId)
+      .then((data) => {
+        setBatch(data.batch);
+        setRecords(data.resumes);
+      })
+      .catch(() => {});
+  }, [batchId]);
+
+  const workspace = useResumeWorkspace({
+    context: 'results',
+    defaultBankDepartmentId: batch?.departmentId,
+    onUpdate: replaceRecord,
+    onRemove: removeRecord,
+    // Keep the summary banner and the rank numbers in sync with the server.
+    onChanged: reloadBatch,
+  });
+
+  const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
       const data = await fetchBatch(batchId);
       setBatch(data.batch);
       setRecords(data.resumes);
-      const firstEmpty: Recommendation =
+      const firstNonEmpty: Recommendation =
         data.batch.stats.interview > 0
           ? 'INTERVIEW'
           : data.batch.stats.review > 0
           ? 'REVIEW'
           : 'REJECT';
-      setTab(firstEmpty);
+      setTab(firstNonEmpty);
     } catch (e: any) {
       setLoadError(e?.message || 'بارگذاری نتایج ممکن نشد');
     } finally {
@@ -86,61 +100,24 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
     load();
   }, [load]);
 
-  const replaceRecord = (updated: ResumeRecord) => {
-    setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-    setDrawerRecord((d) => (d?.id === updated.id ? updated : d));
-    fetchBatch(batchId)
-      .then((data) => {
-        setBatch(data.batch);
-        setRecords(data.resumes);
-        setDrawerRecord((d) => (d ? data.resumes.find((x) => x.id === d.id) || d : null));
-      })
-      .catch(() => {});
-  };
-
-  const removeRecord = (id: string) => {
-    setRecords((prev) => prev.filter((r) => r.id !== id));
-    setDrawerRecord(null);
-    fetchBatch(batchId).then((data) => {
-      setBatch(data.batch);
-      setRecords(data.resumes);
-    }).catch(() => {});
-  };
-
-  const handleRerun = async (r: ResumeRecord) => {
-    setRerunningId(r.id);
+  /** Retry of an ERROR/UNJUDGEABLE file — the fast pass, not a deep review. */
+  const handleRetry = async (r: ResumeRecord) => {
+    setRetryingId(r.id);
     try {
       const { record } = await rerunResume(r.id);
       replaceRecord(record);
+      reloadBatch();
+      emitDecisionsChanged();
       const moved = record.category !== r.category;
-      toast(moved ? `تحلیل تازه انجام شد و دسته به «${CATEGORY_META[record.recommendation!].label}» تغییر کرد` : 'تحلیل تازه انجام شد ✓');
+      toast(
+        moved && record.recommendation
+          ? `تحلیل تازه انجام شد و دسته به «${CATEGORY_META[record.recommendation].label}» تغییر کرد`
+          : 'تحلیل تازه انجام شد ✓'
+      );
     } catch (e: any) {
       toast(e?.message || 'بررسی مجدد ممکن نشد', 'error');
     } finally {
-      setRerunningId(null);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    try {
-      await deleteResume(deleteTarget.id);
-      removeRecord(deleteTarget.id);
-      toast('رزومه حذف شد');
-    } catch (e: any) {
-      toast(e?.message || 'حذف ممکن نشد', 'error');
-    } finally {
-      setDeleteTarget(null);
-    }
-  };
-
-  const handleRemoveBank = async (r: ResumeRecord) => {
-    try {
-      const { record } = await removeFromBank(r.id);
-      replaceRecord(record);
-      toast('از بانک رزومه خارج شد');
-    } catch (e: any) {
-      toast(e?.message || 'عملیات ممکن نشد', 'error');
+      setRetryingId(null);
     }
   };
 
@@ -166,6 +143,7 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
   }, [records]);
 
   const unjudgeable = records.filter((r) => r.category === 'UNJUDGEABLE' || r.category === 'ERROR');
+  const decidedCount = records.filter((r) => (r.decisionStatus || 'none') !== 'none').length;
   const tabRecords = byCategory[tab];
   const page = pages[tab] || 1;
   const totalPages = Math.max(1, Math.ceil(tabRecords.length / PAGE_SIZE));
@@ -183,7 +161,7 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         <div className="h-14 rounded-card bg-surface-1 border border-border-default" />
         <div className="flex flex-col gap-3">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="h-44 rounded-card bg-surface-1 border border-border-default" />
+            <div key={i} className="h-52 rounded-card bg-surface-1 border border-border-default" />
           ))}
         </div>
       </div>
@@ -231,16 +209,6 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
     );
   };
 
-  const cardProps = {
-    context: 'results' as const,
-    onOpen: (r: ResumeRecord) => setDrawerRecord(r),
-    onMessage: (r: ResumeRecord) => setMessageRecord(r),
-    onRerun: handleRerun,
-    onBank: (r: ResumeRecord) => setBankRecord(r),
-    onRemoveBank: handleRemoveBank,
-    onDelete: (r: ResumeRecord) => setDeleteTarget(r),
-  };
-
   return (
     <div className="w-full max-w-[720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-5">
       {/* Print-only Report Header */}
@@ -262,6 +230,7 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
           {batch.stats.unjudgeable > 0 && <span>غیرقابل‌ارزیابی: {toPersianDigits(batch.stats.unjudgeable)}</span>}
         </div>
       </div>
+
       {/* Summary banner */}
       <div className="relative overflow-hidden bg-gradient-to-r from-brand via-brand-600 to-brand-700 text-white p-5 rounded-card shadow-[0_10px_25px_-5px_rgba(0,200,123,0.35)] border border-white/25 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="absolute top-0 right-0 -mt-8 -mr-8 w-40 h-40 bg-white/10 rounded-full blur-2xl pointer-events-none" />
@@ -308,13 +277,39 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         <div className="w-9 h-9 rounded-control bg-brand-soft text-brand flex items-center justify-center shrink-0">
           <Bot className="w-5 h-5" />
         </div>
-        <div>
+        <div className="min-w-0">
           <div className="text-xs font-bold text-brand mb-0.5 flex items-center gap-1">
             تحلیل هوشا از این موقعیت شغلی
           </div>
           <p className="text-xs text-text-2 leading-relaxed font-medium">{batch.understanding.plainExplanation}</p>
         </div>
       </div>
+
+      {/* Decisions shortcut */}
+      {onOpenDecisions && (
+        <div className="bg-surface-1 rounded-card border border-border-default p-3.5 flex items-center gap-3 shadow-xs">
+          <span className="w-9 h-9 rounded-control bg-brand-soft text-brand border border-brand-200 flex items-center justify-center shrink-0">
+            <ClipboardCheck className="w-4.5 h-4.5" />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-bold text-text-1">تصمیم‌های شما روی این نشست</div>
+            <p className="text-[11px] text-text-3 leading-relaxed mt-0.5">
+              {decidedCount > 0
+                ? `${toPersianDigits(decidedCount)} رزومه تایید یا رد شده است؛ همه در بخش «تایید/رد شده» نگهداری می‌شوند.`
+                : 'با دکمه‌های تیک (تایید) و ضربدر (رد) زیر هر کارت، رزومه‌ها را تعیین تکلیف کنید.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onOpenDecisions({ departmentId: batch.departmentId, roleTitle: batch.roleTitle })
+            }
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 min-h-[38px] rounded-control border border-brand/30 bg-brand-soft/60 text-xs font-bold text-brand-700 hover:bg-brand-soft cursor-pointer transition-all"
+          >
+            مشاهده بخش
+          </button>
+        </div>
+      )}
 
       {/* Category tabs */}
       <div className="sticky top-14 sm:top-16 z-30 bg-surface-0/95 backdrop-blur py-2.5 -mx-4 px-4 sm:mx-0 sm:px-0 no-print">
@@ -338,8 +333,10 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
               key={r.id}
               record={r}
               rank={r.rankInCategory ?? undefined}
-              rerunning={rerunningId === r.id}
-              {...cardProps}
+              context="results"
+              rerunning={workspace.rerunningId === r.id}
+              busy={workspace.busyId === r.id}
+              {...workspace.handlers}
             />
           ))}
         </div>
@@ -384,10 +381,10 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
                   {r.category === 'ERROR' && r.extractedText && (
                     <button
                       type="button"
-                      onClick={() => handleRerun(r)}
+                      onClick={() => handleRetry(r)}
                       className="shrink-0 inline-flex items-center gap-1 text-xs font-bold text-brand px-2.5 py-1.5 rounded-control bg-brand-soft border border-brand/20 cursor-pointer hover:bg-brand-soft/80"
                     >
-                      <RotateCcw className={`w-3.5 h-3.5 ${rerunningId === r.id ? 'animate-spin' : ''}`} />
+                      <RotateCcw className={`w-3.5 h-3.5 ${retryingId === r.id ? 'animate-spin' : ''}`} />
                       تلاش دوباره
                     </button>
                   )}
@@ -398,53 +395,10 @@ export const ResultsView: React.FC<ResultsViewProps> = ({ batchId, onNewScreenin
         </div>
       )}
 
-      {/* Overlays */}
-      <CandidateDrawer
-        record={drawerRecord}
-        context="results"
-        onClose={() => setDrawerRecord(null)}
-        onMessage={(r) => {
-          setDrawerRecord(null);
-          setMessageRecord(r);
-        }}
-        onRerun={handleRerun}
-        onBank={(r) => {
-          setDrawerRecord(null);
-          setBankRecord(r);
-        }}
-        onRemoveBank={(r) => {
-          handleRemoveBank(r);
-        }}
-        onDelete={(r) => {
-          setDrawerRecord(null);
-          setDeleteTarget(r);
-        }}
-      />
-      <MessageModal
-        record={messageRecord}
-        onClose={() => setMessageRecord(null)}
-        onMarkedSent={(updated) => replaceRecord(updated)}
-      />
-      <AddToBankModal
-        record={bankRecord}
-        defaultDepartmentId={batch.departmentId}
-        onClose={() => setBankRecord(null)}
-        onSaved={(updated) => replaceRecord(updated)}
-      />
-      <ConfirmDialog
-        open={Boolean(deleteTarget)}
-        title="حذف رزومه"
-        danger
-        confirmLabel="حذف رزومه"
-        message={
-          <>
-            این رزومه{deleteTarget?.inBank ? ' از نتایج غربالگری و بانک رزومه' : ' از نتایج غربالگری'} حذف شود؟
-            {deleteTarget?.candidateName ? ` (${deleteTarget.candidateName})` : ''}
-          </>
-        }
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteTarget(null)}
-      />
+      {/* Overlays (analysis page, drawer, message, bank, delete, reject) */}
+      {workspace.overlays}
     </div>
   );
 };
+
+export default ResultsView;

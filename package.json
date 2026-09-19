@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit",
     "test": "tsx scripts/circuit.test.ts && tsx scripts/api-timeout.test.ts",
     "test:api": "node scripts/smoke.mjs",
+    "test:decisions": "node scripts/decisions.test.mjs",
     "test:mount": "vite build --config vite.mount.config.ts && node scripts/run-mount.mjs"
   },
   "dependencies": {

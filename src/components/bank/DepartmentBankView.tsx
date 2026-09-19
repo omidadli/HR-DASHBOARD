@@ -10,12 +10,9 @@ import {
 } from 'lucide-react';
 import { getDepartment } from '../../lib/departments';
 import {
-  deleteResume,
   fetchBankDepartments,
   fetchBankResumes,
   fetchDepartmentBankBatches,
-  removeFromBank,
-  rerunResume,
 } from '../../lib/api';
 import {
   PagedResult,
@@ -23,9 +20,7 @@ import {
 } from '../../types/screening';
 import { toPersianDigits } from '../../lib/normalizeFa';
 import { CandidateCard } from '../screening/CandidateCard';
-import { CandidateDrawer } from '../screening/CandidateDrawer';
-import { MessageModal } from '../screening/MessageModal';
-import { ConfirmDialog } from '../common/Modal';
+import { useResumeWorkspace } from '../screening/useResumeWorkspace';
 import { Pagination } from '../common/Pagination';
 import { toast } from '../common/Toast';
 
@@ -79,11 +74,6 @@ export const DepartmentBankView: React.FC<Props> = ({ departmentId, initialQuery
   const [loading, setLoading] = useState(true);
   const [allTags, setAllTags] = useState<string[]>([]);
 
-  const [drawerRecord, setDrawerRecord] = useState<ResumeRecord | null>(null);
-  const [messageRecord, setMessageRecord] = useState<ResumeRecord | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ResumeRecord | null>(null);
-  const [rerunningId, setRerunningId] = useState<string | null>(null);
-
   useEffect(() => {
     fetchBankDepartments()
       .then((d) => setAllTags(d.tags))
@@ -126,51 +116,27 @@ export const DepartmentBankView: React.FC<Props> = ({ departmentId, initialQuery
     load();
   }, [load]);
 
-  const patchInList = (updated: ResumeRecord) => {
-    setData((prev) =>
-      prev ? { ...prev, items: prev.items.map((r) => (r.id === updated.id ? updated : r)) } : prev
-    );
-    setDrawerRecord((d) => (d?.id === updated.id ? updated : d));
-  };
-
-  const handleRerun = async (r: ResumeRecord) => {
-    setRerunningId(r.id);
-    try {
-      const { record } = await rerunResume(r.id);
-      patchInList(record);
-      toast('بررسی مجدد با موفقیت انجام شد');
-    } catch (e: any) {
-      toast(e?.message || 'بررسی مجدد ممکن نشد', 'error');
-    } finally {
-      setRerunningId(null);
-    }
-  };
-
-  const handleRemoveBank = async (r: ResumeRecord) => {
-    try {
-      await removeFromBank(r.id);
-      toast('رزومه از بانک خارج شد');
+  /**
+   * Bank cards share the exact same actions as the screening results:
+   * analysis+file page, deep review, message, leave-bank and delete.
+   */
+  const workspace = useResumeWorkspace({
+    context: 'bank',
+    defaultBankDepartmentId: departmentId,
+    onUpdate: (updated) => {
       setData((prev) =>
-        prev ? { ...prev, total: prev.total - 1, items: prev.items.filter((x) => x.id !== r.id) } : prev
+        prev ? { ...prev, items: prev.items.map((r) => (r.id === updated.id ? updated : r)) } : prev
       );
-      setDrawerRecord(null);
-    } catch (e: any) {
-      toast(e?.message || 'عملیات ممکن نشد', 'error');
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    try {
-      await deleteResume(deleteTarget.id);
-      toast('رزومه حذف شد');
-      setDeleteTarget(null);
-      setDrawerRecord(null);
-      load();
-    } catch (e: any) {
-      toast(e?.message || 'حذف ممکن نشد', 'error');
-    }
-  };
+    },
+    onRemove: (id) => {
+      setData((prev) =>
+        prev ? { ...prev, total: Math.max(0, prev.total - 1), items: prev.items.filter((r) => r.id !== id) } : prev
+      );
+      void load();
+    },
+    // Leaving the bank means the resume no longer belongs in this list.
+    shouldRemoveAfterUpdate: (r) => !r.inBank || r.bankDepartmentId !== departmentId,
+  });
 
   const toggleTag = (t: string) => {
     setSelectedTags((prev) =>
@@ -203,16 +169,6 @@ export const DepartmentBankView: React.FC<Props> = ({ departmentId, initialQuery
     setSort('newest');
     setQuery('');
     setPage(1);
-  };
-
-  const cardProps = {
-    context: 'bank' as const,
-    onOpen: (r: ResumeRecord) => setDrawerRecord(r),
-    onMessage: (r: ResumeRecord) => setMessageRecord(r),
-    onRerun: handleRerun,
-    onBank: (_r: ResumeRecord) => {},
-    onRemoveBank: handleRemoveBank,
-    onDelete: (r: ResumeRecord) => setDeleteTarget(r),
   };
 
   return (
@@ -461,7 +417,14 @@ export const DepartmentBankView: React.FC<Props> = ({ departmentId, initialQuery
       ) : (
         <div className="flex flex-col gap-3">
           {data.items.map((r) => (
-            <CandidateCard key={r.id} record={r} rerunning={rerunningId === r.id} {...cardProps} />
+            <CandidateCard
+              key={r.id}
+              record={r}
+              context="bank"
+              rerunning={workspace.rerunningId === r.id}
+              busy={workspace.busyId === r.id}
+              {...workspace.handlers}
+            />
           ))}
         </div>
       )}
@@ -470,47 +433,8 @@ export const DepartmentBankView: React.FC<Props> = ({ departmentId, initialQuery
         <Pagination page={data.page} totalPages={data.totalPages} onChange={setPage} />
       )}
 
-      {/* Overlays */}
-      <CandidateDrawer
-        record={drawerRecord}
-        context="bank"
-        onClose={() => setDrawerRecord(null)}
-        onMessage={(r) => {
-          setDrawerRecord(null);
-          setMessageRecord(r);
-        }}
-        onRerun={handleRerun}
-        onBank={() => {}}
-        onRemoveBank={handleRemoveBank}
-        onDelete={(r) => {
-          setDrawerRecord(null);
-          setDeleteTarget(r);
-        }}
-      />
-      <MessageModal
-        record={messageRecord}
-        onClose={() => setMessageRecord(null)}
-        onMarkedSent={(updated) => {
-          patchInList(updated);
-          load();
-        }}
-      />
-      <ConfirmDialog
-        open={Boolean(deleteTarget)}
-        title="حذف رزومه"
-        danger
-        confirmLabel="حذف رزومه"
-        message={
-          <>
-            این رزومه برای همیشه از بانک رزومه و نتایج غربالگری حذف شود؟
-            {deleteTarget?.candidateName ? (
-              <span className="font-bold text-text-1"> ({deleteTarget.candidateName})</span>
-            ) : ''}
-          </>
-        }
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteTarget(null)}
-      />
+      {/* Overlays (analysis page, drawer, message, bank, delete, reject) */}
+      {workspace.overlays}
     </div>
   );
 };

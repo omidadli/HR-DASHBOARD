@@ -18,10 +18,12 @@ dotenv.config({ override: true });
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import {
   AnalysisEngine,
+  AnalysisMode,
   BatchStats,
   CandidateEvaluation,
   Criterion,
   CriterionScore,
+  DeepFindings,
   DraftMessage,
   EvidencePoint,
   JobUnderstanding,
@@ -190,6 +192,8 @@ async function generateWithFallback(
     timeoutMs?: number;
     /** Absolute budget for all models + retries. */
     deadlineMs?: number;
+    /** LOW keeps screening fast; HIGH is used for the user-requested deep review. */
+    thinkingLevel?: ThinkingLevel;
   }
 ): Promise<string> {
   if (isGeminiCircuitOpen()) {
@@ -215,7 +219,7 @@ async function generateWithFallback(
 
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+        const thinkingConfig = { thinkingLevel: config?.thinkingLevel ?? ThinkingLevel.LOW };
 
         const call = client.models.generateContent({
           model,
@@ -830,6 +834,11 @@ function emptyEvaluation(reason: string): CandidateEvaluation {
 // PASS 1 — Evaluate a single resume
 // ================================================================
 
+export interface EvaluateOptions {
+  /** 'deep' = «بازبینی»: slower, evidence-by-evidence re-read requested by the user. */
+  mode?: AnalysisMode;
+}
+
 export async function evaluateResumeV2(
   departmentName: string,
   roleTitle: string,
@@ -839,8 +848,10 @@ export async function evaluateResumeV2(
   resumeText: string,
   fileName: string,
   fileBase64?: string,
-  fileMimeType?: string
+  fileMimeType?: string,
+  options?: EvaluateOptions
 ): Promise<CandidateEvaluation> {
+  const deep = options?.mode === 'deep';
   const normalized = normalizePersianText(resumeText || '');
   const hasText = Boolean(normalized && normalized.trim().length >= 30);
 
@@ -880,7 +891,10 @@ export async function evaluateResumeV2(
   // Performance optimization: if clean text has already been extracted, send text-only to Gemini.
   // This reduces payload from 10MB to ~5KB and evaluation time from 12s to ~1.5s with zero quality loss.
   // Only send heavy inlineData if the resume is a visual scan without readable extracted text.
-  const needsMultimodal = !hasText && isMultimodal;
+  // Deep review («بازبینی») deliberately opts out of that shortcut: tables, charts and
+  // two-column layouts routinely hide details that plain text extraction drops.
+  const needsMultimodal = deep ? isMultimodal : !hasText && isMultimodal;
+  const textBudget = deep ? 18000 : 9500;
 
   const criteriaStr = understanding.criteria
     .map((c) => `${c.id}. ${c.title} — وزن ${c.weight}٪ ${c.mustHave ? '(الزامی)' : ''}`)
@@ -888,14 +902,38 @@ export async function evaluateResumeV2(
   const answersBrief = buildAnswersBrief(understanding, answers);
 
   let fileContentSection = '';
-  if (needsMultimodal) {
+  if (needsMultimodal && hasText && deep) {
+    fileContentSection = `فایل اصلی رزومه (PDF یا تصویر) ضمیمه شده است و متن استخراج‌شده آن نیز در ادامه آمده است.
+ابتدا فایل را صفحه‌به‌صفحه، شامل جداول، ستون‌ها، پاورقی‌ها، لینک‌ها و نوشته‌های ریز بررسی کن و سپس با متن استخراج‌شده مقایسه کن؛ هر چیزی که فقط در فایل دیده می‌شود را هم لحاظ کن.
+
+متن استخراج‌شده از رزومه:
+"""
+${normalized.slice(0, textBudget)}
+"""`;
+  } else if (needsMultimodal) {
     fileContentSection = `رزومه به‌صورت فایل ضمیمه (PDF یا تصویر اسکن‌شده) همراه این درخواست ارسال شده است. لطفاً تمام لایه‌ها، جداول، متون فارسی و انگلیسی، سوابق و مشخصات آن را مستقیماً از روی فایل با دقت بالا استخراج و تحلیل کن.`;
   } else {
     fileContentSection = `متن کامل رزومه:
 """
-${normalized.slice(0, 9500)}
+${normalized.slice(0, textBudget)}
 """`;
   }
+
+  const deepInstruction = deep
+    ? `
+【حالت بازبینی موشکافانه (Deep Review)】
+کاربر منابع انسانی دکمه «بازبینی» را زده است؛ یعنی یک بار این رزومه سریع غربالگری شده و حالا قضاوت دقیق‌تر و جزئی‌نگرانه‌تر می‌خواهد. بنابراین:
+الف) هر بند، هر شغل، هر تاریخ و هر عدد رزومه را جداگانه بخوان و با شاخص‌ها تطبیق بده؛ به هیچ نکته‌ای از روی ظاهر رد نشو.
+ب) تناقض‌ها و ابهام‌ها را فعالانه جست‌وجو کن: هم‌پوشانی یا شکاف زمانی بین سوابق، عنوان شغلی بزرگ‌تر از شرح وظایف واقعی، ادعای مهارت بدون هیچ شاهد، تاریخ‌های نامنظم، تکرار یک دوره در دو جا، یا دستاوردهای بدون عدد و سنجه.
+پ) برای هر شاخص، rationale را کامل‌تر و evidence را دقیق‌تر (نقل‌قول مستقیم و کوتاه از خود رزومه) بنویس؛ اگر هیچ شاهدی نیست صریحاً بنویس «در رزومه به این مورد اشاره نشده».
+ت) نقاط قوت و ضعف را تا حداکثر ۶ مورد و فقط با شاهد واقعی بنویس؛ موارد تکراری یا بدیهی را حذف کن.
+ث) در خروجی، بلوک «deepFindings» را حتماً پر کن:
+   - focusPoints: حداکثر ۵ نکته دقیق و متفاوتی که در این بازخوانی پیدا کردی و در نگاه اول دیده نمی‌شد (هر مورد یک جمله فارسی).
+   - interviewQuestions: حداکثر ۵ سوال مصاحبه‌ای تیز و اختصاصی برای راستی‌آزمایی همین رزومه (نه سوال عمومی).
+   - risks: حداکثر ۴ ریسک، تناقض یا علامت هشدار؛ اگر موردی نبود آرایه خالی بده.
+ج) اگر شواهد واقعاً روشن‌تر شد، امتیاز را بدون تعارف اصلاح کن (بالا یا پایین)؛ اگر شواهد تغییری نکرد، همان امتیاز قبلی را نگه دار و در summary بنویس که بازبینی نتیجه را تایید کرد.
+`
+    : '';
 
   const prompt = `تو یک کارشناس ارشد و بسیار دقیق غربالگری رزومه در هلدینگ تولیدی «سیلانه سبز» هستی.
 یک رزومه را موشکافانه با شرایط شغل می‌سنجی.
@@ -917,7 +955,7 @@ ${answersBrief}
 
 نام فایل رزومه: ${fileName}
 ${fileContentSection}
-
+${deepInstruction}
 قوانین نقض‌ناپذیر:
 ۱. فقط بر اساس چیزی که واقعاً در محتوای رزومه آمده قضاوت کن. هرگز نام، عدد، سابقه، مدرک یا مهارتی را حدس نزن یا به نام فایل نسبت نده. اگر اطلاعاتی در رزومه نبود، null بده.
 ۲. candidateName فقط اگر نام صریح در رزومه آمده پر شود؛ در غیر این صورت null.
@@ -961,7 +999,12 @@ ${fileContentSection}
   "knockoutMisses": [],
   "tags": [],
   "bankSuggested": false,
-  "flags": { "irrelevant": false, "insufficientInfo": false, "scannedNoText": false }
+  "flags": { "irrelevant": false, "insufficientInfo": false, "scannedNoText": false }${
+    deep
+      ? `,
+  "deepFindings": { "focusPoints": ["..."], "interviewQuestions": ["..."], "risks": ["..."] }`
+      : ''
+  }
 }`;
 
   try {
@@ -981,12 +1024,18 @@ ${fileContentSection}
 
     const raw = await generateWithFallback(contents, {
       temperature: 0.1,
-      timeoutMs: 10_000,
-      deadlineMs: 16_000,
+      // Deep review is an explicit user action with a spinner on screen, so it
+      // gets a much larger budget than the batch pass (and thinks harder).
+      timeoutMs: deep ? 45_000 : 10_000,
+      deadlineMs: deep ? 80_000 : 16_000,
+      thinkingLevel: deep ? ThinkingLevel.HIGH : ThinkingLevel.LOW,
     });
     const parsed = cleanAndParseJson<any>(raw, null);
     if (!parsed) throw new Error('malformed evaluation');
-    return finalizeEvaluation(parsed, understanding, answers, 'ai', normalized);
+    return finalizeEvaluation(parsed, understanding, answers, 'ai', normalized, {
+      deep,
+      maxPoints: deep ? 6 : 4,
+    });
   } catch (err: any) {
     if (err?.message !== CIRCUIT_OPEN) {
       console.log(`[evaluateResumeV2] «${fileName}» → local engine (${err?.message || 'err'})`);
@@ -995,14 +1044,23 @@ ${fileContentSection}
   }
 }
 
+export interface FinalizeOptions {
+  /** Deep review keeps more evidence points and parses the deepFindings block. */
+  deep?: boolean;
+  /** Max strengths/weaknesses kept (4 on the fast pass, 6 on a deep review). */
+  maxPoints?: number;
+}
+
 /** Normalize, clamp and apply hard business rules to any AI/local evaluation. */
 export function finalizeEvaluation(
   raw: any,
   understanding: JobUnderstanding,
   answers: ScreeningAnswers,
   engine: AnalysisEngine,
-  contextText?: string
+  contextText?: string,
+  options?: FinalizeOptions
 ): CandidateEvaluation {
+  const maxPoints = Math.max(1, Math.min(8, options?.maxPoints || 4));
   const num = (v: any, d = 0) => {
     const n = Math.round(Number(toEnglishDigits(String(v ?? '')).replace(/[^\d.-]/g, '')));
     return Number.isFinite(n) ? n : d;
@@ -1042,7 +1100,7 @@ export function finalizeEvaluation(
   };
 
   const strengths: EvidencePoint[] = arr<any>(raw.strengths)
-    .slice(0, 4)
+    .slice(0, maxPoints)
     .map((s) => ({
       point: str(s.point) || 'نقطه قوت',
       evidence: str(s.evidence) || 'شاهد در رزومه ثبت نشده.',
@@ -1052,7 +1110,7 @@ export function finalizeEvaluation(
         | 'minor',
     }));
   const weaknesses: EvidencePoint[] = arr<any>(raw.weaknesses)
-    .slice(0, 4)
+    .slice(0, maxPoints)
     .map((w) => ({
       point: str(w.point) || 'مورد نیازمند بررسی',
       evidence: str(w.evidence) || 'شاهد در رزومه ثبت نشده.',
@@ -1167,6 +1225,21 @@ export function finalizeEvaluation(
   else if (score >= understanding.thresholds.review) recommendation = 'REVIEW';
   else recommendation = 'REJECT';
 
+  const deepFindings: DeepFindings | null = options?.deep
+    ? (() => {
+        const list = (v: any, limit: number) =>
+          arr<any>(v)
+            .map((x) => (typeof x === 'string' ? x.trim() : str(x?.point) || str(x?.text) || ''))
+            .filter(Boolean)
+            .slice(0, limit);
+        const focusPoints = list(raw.deepFindings?.focusPoints, 5);
+        const interviewQuestions = list(raw.deepFindings?.interviewQuestions, 5);
+        const risks = list(raw.deepFindings?.risks, 4);
+        if (!focusPoints.length && !interviewQuestions.length && !risks.length) return null;
+        return { focusPoints, interviewQuestions, risks };
+      })()
+    : null;
+
   return {
     candidateName: str(raw.candidateName),
     contact,
@@ -1187,6 +1260,7 @@ export function finalizeEvaluation(
     tags: arr<any>(raw.tags).map((t) => String(t)).slice(0, 6),
     bankSuggested: Boolean(raw.bankSuggested),
     flags,
+    deepFindings,
   };
 }
 

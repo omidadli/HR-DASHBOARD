@@ -1,5 +1,6 @@
 import { ResumeRecord, ScreeningBatch } from '../types/screening';
 import { toPersianDigits } from './normalizeFa';
+import { DECISION_META, decisionOf, isPendingHumanDecision } from './decisions';
 
 const CAT_LABEL: Record<string, string> = {
   INTERVIEW: 'مصاحبه شود',
@@ -8,6 +9,13 @@ const CAT_LABEL: Record<string, string> = {
   UNJUDGEABLE: 'غیرقابل ارزیابی',
   ERROR: 'خطا در تحلیل',
 };
+
+/** The HR decision is reported separately from هوشا's suggestion. */
+function decisionText(r: ResumeRecord): string {
+  const d = decisionOf(r);
+  if (d === 'none') return isPendingHumanDecision(r) ? 'در انتظار تصمیم' : '—';
+  return DECISION_META[d].label;
+}
 
 export async function exportBatchToExcel(batch: ScreeningBatch, records: ResumeRecord[]) {
   const XLSX = await import('xlsx');
@@ -25,6 +33,12 @@ export async function exportBatchToExcel(batch: ScreeningBatch, records: ResumeR
     { مورد: 'بررسی شود', مقدار: toPersianDigits(batch.stats.review) },
     { مورد: 'رد شود', مقدار: toPersianDigits(batch.stats.reject) },
     { مورد: 'غیرقابل ارزیابی', مقدار: toPersianDigits(batch.stats.unjudgeable) },
+    {
+      مورد: 'تصمیم کاربر (تایید / رد / نیاز به بررسی)',
+      مقدار: `${toPersianDigits(records.filter((r) => decisionOf(r) === 'approved').length)} / ${toPersianDigits(
+        records.filter((r) => decisionOf(r) === 'rejected').length
+      )} / ${toPersianDigits(records.filter((r) => decisionOf(r) === 'review').length)}`,
+    },
   ];
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'خلاصه');
 
@@ -52,6 +66,10 @@ export async function exportBatchToExcel(batch: ScreeningBatch, records: ResumeR
       'نقاط قوت': r.strengths.map((s) => s.point).join('؛ '),
       'کمبودها': r.weaknesses.map((w) => w.point).join('؛ '),
       'در بانک رزومه': r.inBank ? 'بله' : 'خیر',
+      'تصمیم کاربر': decisionText(r),
+      'تاریخ تصمیم': r.decidedAtJalali || '—',
+      'دلیل/یادداشت تصمیم': r.decisionNote || '—',
+      'بازبینی دقیق': r.deepAnalysisAtJalali ? `انجام شد (${r.deepAnalysisAtJalali})` : '—',
       'فایل': r.fileName,
       'موتور تحلیل': r.engine === 'local' ? 'محلی (غیر هوشمند)' : r.engine === 'ai' ? 'هوشا' : '—',
     }));
