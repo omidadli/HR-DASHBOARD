@@ -13,6 +13,12 @@ import {
   BankFilters,
   BatchStats,
   CandidateEvaluation,
+  DecisionCounts,
+  DecisionFilters,
+  DecisionPositionOption,
+  DecidedStatus,
+  DecisionStatus,
+  DecisionsPage,
   JobUnderstanding,
   PagedResult,
   ResumeCategory,
@@ -22,6 +28,7 @@ import {
 } from '../src/types/screening';
 import { DEPARTMENTS } from '../src/lib/departments';
 import { tehranNow } from './tehran-time';
+import { compareJalali, gregorianToJalali, parseJalaliDateString } from '../src/utils/jalali';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const STORE_FILE = path.join(DATA_DIR, 'screening-store.json');
@@ -64,13 +71,35 @@ export async function initStore() {
     const raw = await fs.promises.readFile(STORE_FILE, 'utf-8');
     const snap = JSON.parse(raw) as Snapshot;
     batches = new Map((snap.batches || []).map((b) => [b.id, b]));
-    resumes = new Map((snap.resumes || []).map((r) => [r.id, r]));
+    // Snapshots written before the decisions workspace have no decision fields;
+    // normalize them once on load so every read path can rely on the shape.
+    resumes = new Map(
+      (snap.resumes || []).map((r) => {
+        const rec = normalizeResume(r);
+        return [rec.id, rec];
+      })
+    );
     console.log(`[store] loaded ${batches.size} batches, ${resumes.size} resumes.`);
   } catch {
     // first run / corrupt snapshot — start empty
     batches = new Map();
     resumes = new Map();
   }
+}
+
+/** Fill in fields added after a record was persisted (decision workspace, roleTitle). */
+function normalizeResume(r: ResumeRecord): ResumeRecord {
+  const batch = batches.get(r.batchId);
+  return {
+    ...r,
+    roleTitle: r.roleTitle ?? batch?.roleTitle ?? null,
+    analysisHistory: Array.isArray(r.analysisHistory) ? r.analysisHistory : [],
+    decisionStatus: r.decisionStatus || 'none',
+    decidedAtJalali: r.decidedAtJalali ?? null,
+    decidedAtISO: r.decidedAtISO ?? null,
+    decisionNote: r.decisionNote ?? null,
+    deepAnalysisAtJalali: r.deepAnalysisAtJalali ?? null,
+  };
 }
 
 function scheduleSave() {
@@ -279,6 +308,7 @@ export async function saveEvaluation(input: {
     userId: batch.userId || null,
     departmentId: batch.departmentId,
     departmentName: batch.departmentName,
+    roleTitle: batch.roleTitle || null,
     fileName: input.fileName,
     filePath,
     extractedText: input.extractedText?.slice(0, 20000) || '',
@@ -301,6 +331,7 @@ export async function saveEvaluation(input: {
     tags: ev?.tags || [],
     bankSuggested: ev?.bankSuggested || false,
     flags: ev?.flags || null,
+    deepFindings: ev?.deepFindings || null,
 
     category,
     rankInCategory: null,
@@ -315,6 +346,12 @@ export async function saveEvaluation(input: {
     addedToBankAtJalali: null,
     messageStatus: 'none',
     lastMessagedAtJalali: null,
+
+    decisionStatus: 'none',
+    decidedAtJalali: null,
+    decidedAtISO: null,
+    decisionNote: null,
+    deepAnalysisAtJalali: null,
 
     deleted: false,
     createdAtISO: new Date().toISOString(),
@@ -336,7 +373,11 @@ export function getResumeForUser(id: string, userId?: string): ResumeRecord | nu
   return ownerOk(rec.userId, userId) ? rec : null;
 }
 
-export function updateResumeEvaluation(id: string, ev: CandidateEvaluation): ResumeRecord | null {
+export function updateResumeEvaluation(
+  id: string,
+  ev: CandidateEvaluation,
+  mode: 'rerun' | 'deep' = 'rerun'
+): ResumeRecord | null {
   const rec = resumes.get(id);
   if (!rec) return null;
   const now = tehranNow();
@@ -359,8 +400,18 @@ export function updateResumeEvaluation(id: string, ev: CandidateEvaluation): Res
   rec.tags = ev.tags;
   rec.bankSuggested = ev.bankSuggested;
   rec.flags = ev.flags;
+  // A fresh pass replaces the old insights; deep findings only survive a deep pass.
+  rec.deepFindings = ev.deepFindings || null;
   rec.category = categoryFromEvaluation(ev, null);
-  rec.analysisHistory.push({ score: ev.score, atJalali: now.jalaliString, reason: 'rerun', engine: ev.engine });
+  rec.analysisHistory.push({
+    score: ev.score,
+    atJalali: now.jalaliString,
+    reason: mode,
+    engine: ev.engine,
+    mode: mode === 'deep' ? 'deep' : 'standard',
+  });
+  // Only an AI pass counts as a real «بازبینی» — the local engine is a fallback.
+  if (mode === 'deep' && ev.engine === 'ai') rec.deepAnalysisAtJalali = now.jalaliString;
   if (batch) recomputeBatch(rec.batchId);
   scheduleSave();
   return rec;
@@ -566,3 +617,205 @@ export async function getResumeFileBase64(recordId: string): Promise<{ base64: s
   }
 }
 
+
+// ================================================================
+// Decisions workspace — «رزومه‌های تایید/رد شده»
+//
+// A resume carries an HR decision (approved / rejected / review) that is
+// completely independent of the AI category: هوشا suggests, the human decides.
+// The "needs review" list also surfaces undecided resumes that the AI put in
+// the REVIEW category, because those are exactly the ones waiting for a human.
+// ================================================================
+
+const DECIDED_STATUSES: DecidedStatus[] = ['approved', 'rejected', 'review'];
+
+/** Jalali date used for range filters: the decision date, else the upload date. */
+function decisionJalaliOf(r: ResumeRecord): ReturnType<typeof parseJalaliDateString> {
+  const stamped = parseJalaliDateString(r.decidedAtJalali || null);
+  if (stamped) return stamped;
+  const iso = r.decidedAtISO || r.createdAtISO;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return gregorianToJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
+}
+
+function inDecisionList(r: ResumeRecord, status: DecidedStatus): boolean {
+  const current = r.decisionStatus || 'none';
+  if (status === 'review') {
+    return current === 'review' || (current === 'none' && r.category === 'REVIEW');
+  }
+  return current === status;
+}
+
+export function setDecision(
+  id: string,
+  status: DecisionStatus,
+  note?: string | null,
+  /** Backdating hook — only used to build realistic demo/preview data. */
+  at?: { jalaliString: string; iso: string }
+): ResumeRecord | null {
+  const rec = resumes.get(id);
+  if (!rec) return null;
+  if (status === 'none') {
+    rec.decisionStatus = 'none';
+    rec.decidedAtJalali = null;
+    rec.decidedAtISO = null;
+    rec.decisionNote = null;
+  } else {
+    const now = tehranNow();
+    rec.decisionStatus = status;
+    rec.decidedAtJalali = at?.jalaliString || now.jalaliString;
+    rec.decidedAtISO = at?.iso || new Date().toISOString();
+    const clean = typeof note === 'string' ? note.trim().slice(0, 400) : '';
+    rec.decisionNote = clean || null;
+  }
+  scheduleSave();
+  return rec;
+}
+
+interface DecisionQuery {
+  departmentId?: string;
+  roleTitle?: string;
+  query?: string;
+  fromJalali?: string;
+  toJalali?: string;
+  minScore?: number;
+}
+
+function matchesDecisionQuery(r: ResumeRecord, q: DecisionQuery): boolean {
+  if (q.departmentId && q.departmentId !== 'all' && r.departmentId !== q.departmentId) return false;
+  if (q.roleTitle && q.roleTitle !== 'all') {
+    const role = r.roleTitle || batches.get(r.batchId)?.roleTitle || '';
+    if (role !== q.roleTitle) return false;
+  }
+  if (q.minScore && r.score < q.minScore) return false;
+  if (q.query && q.query.trim()) {
+    const needle = q.query.trim().toLowerCase();
+    const hay = [
+      r.candidateName,
+      r.fileName,
+      r.departmentName,
+      r.roleTitle,
+      r.facts?.lastRole,
+      r.facts?.skills?.join(' '),
+      r.tags.join(' '),
+      r.bankTags?.join(' '),
+      r.decisionNote,
+      r.contact?.city,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    if (!hay.includes(needle)) return false;
+  }
+  const from = parseJalaliDateString(q.fromJalali || null);
+  const to = parseJalaliDateString(q.toJalali || null);
+  if (from || to) {
+    const day = decisionJalaliOf(r);
+    if (!day) return false;
+    if (from && compareJalali(day, from) < 0) return false;
+    if (to && compareJalali(day, to) > 0) return false;
+  }
+  return true;
+}
+
+function decisionPool(userId?: string): ResumeRecord[] {
+  return Array.from(resumes.values()).filter(
+    (r) => !r.deleted && ownerOk(r.userId, userId) && (r.decisionStatus || 'none') !== undefined
+  );
+}
+
+export function decisionCounts(filters: DecisionFilters): DecisionCounts {
+  const pool = decisionPool(filters.userId).filter((r) => matchesDecisionQuery(r, filters));
+  const counts: DecisionCounts = { approved: 0, rejected: 0, review: 0 };
+  for (const status of DECIDED_STATUSES) {
+    counts[status] = pool.filter((r) => inDecisionList(r, status)).length;
+  }
+  return counts;
+}
+
+export function listDecisionResumes(filters: DecisionFilters): DecisionsPage {
+  const pageSize = Math.min(50, Math.max(1, filters.pageSize || 10));
+  const page = Math.max(1, filters.page || 1);
+  const status: DecidedStatus = DECIDED_STATUSES.includes(filters.status as DecidedStatus)
+    ? (filters.status as DecidedStatus)
+    : 'approved';
+
+  let items = decisionPool(filters.userId).filter(
+    (r) => inDecisionList(r, status) && matchesDecisionQuery(r, filters)
+  );
+
+  const decidedAt = (r: ResumeRecord) => r.decidedAtISO || r.createdAtISO || '';
+  const sort = filters.sort || 'newest';
+  items.sort((a, b) => {
+    if (sort === 'score') return b.score - a.score;
+    if (sort === 'experience')
+      return (b.facts?.yearsExperience ?? -1) - (a.facts?.yearsExperience ?? -1);
+    if (sort === 'oldest') return decidedAt(a).localeCompare(decidedAt(b));
+    return decidedAt(b).localeCompare(decidedAt(a));
+  });
+
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * pageSize;
+
+  return {
+    items: items.slice(start, start + pageSize),
+    page: safePage,
+    pageSize,
+    total,
+    totalPages,
+    counts: decisionCounts(filters),
+  };
+}
+
+/** Quick-access list of job positions that actually have decided resumes. */
+export function decisionPositions(filters: DecisionFilters): DecisionPositionOption[] {
+  const map = new Map<string, DecisionPositionOption>();
+  for (const r of decisionPool(filters.userId)) {
+    if (!matchesDecisionQuery(r, { ...filters, roleTitle: undefined })) continue;
+    if ((r.decisionStatus || 'none') === 'none' && r.category !== 'REVIEW') continue;
+    const roleTitle = (r.roleTitle || batches.get(r.batchId)?.roleTitle || '').trim();
+    if (!roleTitle) continue;
+    const key = `${r.departmentId}::${roleTitle}`;
+    const found = map.get(key);
+    if (found) found.count += 1;
+    else
+      map.set(key, {
+        departmentId: r.departmentId,
+        departmentName: r.departmentName,
+        roleTitle,
+        count: 1,
+      });
+  }
+  return Array.from(map.values()).sort(
+    (a, b) => b.count - a.count || a.roleTitle.localeCompare(b.roleTitle, 'fa')
+  );
+}
+
+export function decisionDepartments(userId?: string): { id: string; name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const r of decisionPool(userId)) {
+    const st = r.decisionStatus || 'none';
+    if (st === 'none' && r.category !== 'REVIEW') continue;
+    counts.set(r.departmentId, (counts.get(r.departmentId) || 0) + 1);
+  }
+  return DEPARTMENTS.filter((d) => counts.get(d.id)).map((d) => ({
+    id: d.id,
+    name: d.name,
+    count: counts.get(d.id) || 0,
+  }));
+}
+
+/** Every batch role title seen for this user — used to suggest positions before any decision exists. */
+export function knownRoleTitles(userId?: string): { departmentId: string; roleTitle: string }[] {
+  const set = new Map<string, { departmentId: string; roleTitle: string }>();
+  for (const b of batches.values()) {
+    if (!ownerOk(b.userId, userId)) continue;
+    const role = (b.roleTitle || '').trim();
+    if (!role) continue;
+    set.set(`${b.departmentId}::${role}`, { departmentId: b.departmentId, roleTitle: role });
+  }
+  return Array.from(set.values());
+}

@@ -1,59 +1,52 @@
 import React from 'react';
-import {
-  MessageCircle,
-  RefreshCw,
-  BookmarkPlus,
-  Trash2,
-  Bot,
-  CheckCheck,
-  BookmarkCheck,
-  MapPin,
-  Briefcase,
-  Clock3,
-  Sparkles,
-} from 'lucide-react';
+import { Bot, Briefcase, CheckCheck, Clock3, MapPin, ScanSearch, Sparkles } from 'lucide-react';
 import { ResumeRecord } from '../../types/screening';
 import { CATEGORY_META } from '../../lib/categories';
 import { toPersianDigits } from '../../lib/normalizeFa';
+import { DECISION_META, decisionLabel, decisionOf, isPendingHumanDecision } from '../../lib/decisions';
 import { CandidateAvatar } from '../common/CandidateAvatar';
+import { CandidateActionHandlers, CardContext, CandidateActions } from './CandidateActions';
 
-interface CandidateCardProps {
+interface CandidateCardProps extends CandidateActionHandlers {
   record: ResumeRecord;
   rank?: number;
+  /** A deep review («بازبینی») is in flight for this record. */
   rerunning?: boolean;
-  context: 'results' | 'bank';
-  onOpen: (r: ResumeRecord) => void;
-  onMessage: (r: ResumeRecord) => void;
-  onRerun: (r: ResumeRecord) => void;
-  onBank: (r: ResumeRecord) => void;
-  onRemoveBank: (r: ResumeRecord) => void;
-  onDelete: (r: ResumeRecord) => void;
+  /** A decision/bank/delete mutation is in flight for this record. */
+  busy?: boolean;
+  context: CardContext;
 }
 
-function initial(name: string | null): string {
-  if (!name) return '؟';
-  const parts = name.trim().split(/\s+/);
-  return (parts[0]?.[0] || '؟') + (parts[1]?.[0] || '');
-}
-
+/**
+ * One resume card. The body (avatar, score, «چرا این دسته؟», tags) is identical
+ * everywhere; only the action row changes per surface — see CandidateActions.
+ */
 export const CandidateCard: React.FC<CandidateCardProps> = ({
   record,
   rank,
   rerunning,
+  busy,
   context,
   onOpen,
+  onOpenAnalysis,
   onMessage,
   onRerun,
   onBank,
   onRemoveBank,
   onDelete,
+  onApprove,
+  onReject,
+  onNeedsReview,
+  onClearDecision,
 }) => {
   const rec = record.recommendation;
   const meta = rec ? CATEGORY_META[rec] : null;
   const name = record.candidateName || 'کاندید بدون نام (روی کارت بزنید)';
   const years = record.facts?.yearsExperience;
+  const decision = decisionOf(record);
+  const pending = isPendingHumanDecision(record);
+  const label = decisionLabel(record);
 
-  // Category-specific avatar & rank colors
   const categoryTone =
     rec === 'INTERVIEW'
       ? 'bg-brand-soft text-brand-700 border-brand-200'
@@ -63,14 +56,20 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
       ? 'bg-danger-soft text-danger border-[var(--danger-border)]'
       : 'bg-surface-2 text-text-2 border-border-default';
 
-  const actionBtn =
-    'min-h-[44px] sm:min-h-[38px] inline-flex items-center justify-center gap-1.5 rounded-control border text-xs font-medium cursor-pointer transition-all disabled:opacity-60 disabled:cursor-wait px-2 sm:px-2.5 py-2 sm:py-1.5 shadow-xs';
+  const decisionTone =
+    decision === 'approved'
+      ? DECISION_META.approved.badge
+      : decision === 'rejected'
+      ? DECISION_META.rejected.badge
+      : decision === 'review'
+      ? DECISION_META.review.badge
+      : 'bg-warning-soft text-warning border-[var(--warning-border)]';
 
   return (
     <div
-      className={`w-full bg-surface-1 rounded-card border border-border-default p-4 sm:p-5 flex flex-col gap-3 shadow-xs ${
+      className={`w-full bg-surface-1 rounded-card border border-border-default p-4 sm:p-5 flex flex-col gap-3 shadow-xs card-hover-lift ${
         meta ? meta.ring : ''
-      } transition-all`}
+      } ${rerunning ? 'opacity-80' : ''}`}
     >
       {/* Header row */}
       <div className="flex items-start justify-between gap-3">
@@ -87,11 +86,7 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
               {toPersianDigits(rank)}
             </span>
           )}
-          <CandidateAvatar
-            name={record.candidateName}
-            category={record.category}
-            size="md"
-          />
+          <CandidateAvatar name={record.candidateName} category={record.category} size="md" />
           <div className="min-w-0 flex flex-col gap-1">
             <span className="flex items-center gap-2 flex-wrap">
               <h3 className="text-sm font-bold text-text-1 truncate">{name}</h3>
@@ -100,12 +95,33 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
                   {meta.label}
                 </span>
               )}
+              {label && (
+                <span
+                  className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border ${decisionTone}`}
+                  title={
+                    decision === 'none'
+                      ? 'هوشا «بررسی شود» داده و هنوز تصمیمی ثبت نشده است'
+                      : `${DECISION_META[decision].label}${record.decidedAtJalali ? ` — ${record.decidedAtJalali}` : ''}`
+                  }
+                >
+                  {label}
+                </span>
+              )}
               {record.engine === 'local' && (
                 <span
                   className="text-xs font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-3 border border-border-default"
                   title="این تحلیل با موتور محلی انجام شده است"
                 >
                   تحلیل محلی
+                </span>
+              )}
+              {record.deepAnalysisAtJalali && (
+                <span
+                  className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-brand-soft text-brand border border-brand-200"
+                  title={`بازبینی دقیق در ${record.deepAnalysisAtJalali}`}
+                >
+                  <ScanSearch className="w-3.5 h-3.5" />
+                  بازبینی‌شده
                 </span>
               )}
               {record.messageStatus === 'sent' && (
@@ -137,14 +153,23 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
                   {record.contact.city}
                 </span>
               )}
+              {(context === 'decisions' || context === 'bank') && record.roleTitle && (
+                <span className="inline-flex items-center gap-1 truncate" title="موقعیت شغلی">
+                  {record.roleTitle}
+                </span>
+              )}
             </span>
           </div>
         </button>
 
         {/* Score */}
         {meta && record.score > 0 && (
-          <div className={`flex flex-col items-center justify-center px-3.5 py-1.5 rounded-control border shrink-0 ${meta.scoreBox}`}>
-            <span className="text-2xl font-bold leading-none tabular-nums">{toPersianDigits(record.score)}</span>
+          <div
+            className={`flex flex-col items-center justify-center px-3.5 py-1.5 rounded-control border shrink-0 ${meta.scoreBox}`}
+          >
+            <span className="text-2xl font-bold leading-none tabular-nums">
+              {toPersianDigits(record.score)}
+            </span>
             <span className="text-xs font-medium opacity-80 mt-1">از ۱۰۰</span>
           </div>
         )}
@@ -162,6 +187,26 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
         </span>
       </button>
 
+      {/* Decision note (captured when rejecting) */}
+      {record.decisionNote && decision !== 'none' && (
+        <div
+          className={`text-xs leading-relaxed rounded-control border px-3 py-2 ${
+            decision === 'rejected'
+              ? 'bg-danger-soft/50 border-[var(--danger-border)] text-danger'
+              : 'bg-surface-2/60 border-border-default text-text-2'
+          }`}
+        >
+          <span className="font-bold">دلیل ثبت‌شده: </span>
+          {record.decisionNote}
+        </div>
+      )}
+      {pending && (
+        <div className="text-xs leading-relaxed rounded-control border border-[var(--warning-border)] bg-warning-soft/60 px-3 py-2 text-warning flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5 shrink-0" />
+          هوشا این رزومه را «بررسی شود» داده است — با تایید یا رد، تعیین تکلیفش کنید.
+        </div>
+      )}
+
       {/* Tags */}
       {record.tags.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -176,71 +221,24 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
         </div>
       )}
 
-      {/* Actions (4 shortcut buttons) */}
-      <div className="grid grid-cols-2 sm:flex sm:items-stretch gap-2 pt-2 border-t border-border-default">
-        <button
-          type="button"
-          onClick={() => onMessage(record)}
-          className={`${actionBtn} flex-1 bg-surface-1 border-border-default text-text-1 hover:border-brand/40 hover:bg-brand-soft/30 hover:text-brand`}
-          title="ارسال پیام"
-        >
-          <MessageCircle className="w-3.5 h-3.5 text-text-2" />
-          ارسال پیام
-        </button>
-        <button
-          type="button"
-          onClick={() => onRerun(record)}
-          disabled={rerunning}
-          className={`${actionBtn} flex-1 bg-surface-1 border-border-default text-text-1 hover:border-brand/40 hover:bg-brand-soft/30 hover:text-brand`}
-          title="بررسی مجدد با هوشا"
-        >
-          {rerunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand" /> : <RefreshCw className="w-3.5 h-3.5 text-text-2" />}
-          بررسی مجدد
-        </button>
-        {context === 'results' ? (
-          <button
-            type="button"
-            onClick={() => onBank(record)}
-            className={`${actionBtn} flex-1 ${
-              record.inBank
-                ? 'bg-brand-soft border-brand/30 text-brand-700'
-                : 'bg-surface-1 border-border-default text-text-1 hover:border-brand/40 hover:bg-brand-soft/30 hover:text-brand'
-            }`}
-            title={record.inBank ? 'مشاهده و جابه‌جایی در بانک رزومه' : 'افزودن به بانک رزومه'}
-          >
-            {record.inBank ? (
-              <>
-                <BookmarkCheck className="w-3.5 h-3.5 text-brand" />
-                در بانک ✓
-              </>
-            ) : (
-              <>
-                <BookmarkPlus className="w-3.5 h-3.5 text-text-2" />
-                افزودن به بانک
-              </>
-            )}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onRemoveBank(record)}
-            className={`${actionBtn} flex-1 bg-surface-1 border-border-default text-warning hover:border-[var(--warning-border)] hover:bg-warning-soft`}
-            title="خروج از بانک رزومه"
-          >
-            <BookmarkCheck className="w-3.5 h-3.5 text-warning" />
-            خروج از بانک
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => onDelete(record)}
-          className={`${actionBtn} flex-1 bg-surface-1 border-border-default text-danger hover:border-[var(--danger-border)] hover:bg-danger-soft`}
-          title="حذف رزومه"
-        >
-          <Trash2 className="w-3.5 h-3.5 text-danger" />
-          حذف
-        </button>
-      </div>
+      {/* Actions */}
+      <CandidateActions
+        record={record}
+        context={context}
+        rerunning={rerunning}
+        busy={busy}
+        onOpen={onOpen}
+        onOpenAnalysis={onOpenAnalysis}
+        onMessage={onMessage}
+        onRerun={onRerun}
+        onBank={onBank}
+        onRemoveBank={onRemoveBank}
+        onDelete={onDelete}
+        onApprove={onApprove}
+        onReject={onReject}
+        onNeedsReview={onNeedsReview}
+        onClearDecision={onClearDecision}
+      />
 
       {record.bankSuggested && !record.inBank && (
         <div className="text-xs font-medium text-brand flex items-center gap-1.5 -mt-1 pt-1">
@@ -251,3 +249,5 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
     </div>
   );
 };
+
+export default CandidateCard;

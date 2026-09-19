@@ -1,5 +1,9 @@
 import type {
   BankDepartmentCount,
+  DecisionFilters,
+  DecisionStatus,
+  DecisionsMeta,
+  DecisionsPage,
   DraftMessage,
   JobUnderstanding,
   MessageKind,
@@ -180,6 +184,74 @@ export function rerunResume(
   return jsonFetch(`/api/resumes/${id}/rerun`, { method: 'POST' }, { timeoutMs: 150_000, ...opts });
 }
 
+export interface RerunResult {
+  record: ResumeRecord;
+  stats?: ScreeningBatch['stats'];
+  mode?: 'standard' | 'deep';
+  /** 'local' means هوشا was unavailable and the keyword engine answered instead. */
+  engine?: 'ai' | 'local';
+}
+
+/**
+ * «بازبینی» — asks the AI to re-read the resume carefully (original file +
+ * extracted text, higher reasoning budget, extra findings). Slower by design.
+ */
+export function deepRerunResume(id: string, opts: RequestOptions = {}): Promise<RerunResult> {
+  return jsonFetch(`/api/resumes/${id}/deep-rerun`, { method: 'POST' }, { timeoutMs: 180_000, ...opts });
+}
+
+/** Sets (or with 'none' clears) the HR decision on a resume. */
+export function setResumeDecision(
+  id: string,
+  status: DecisionStatus,
+  note?: string,
+  opts: RequestOptions = {}
+): Promise<{ record: ResumeRecord; stats?: ScreeningBatch['stats'] }> {
+  return jsonFetch(
+    `/api/resumes/${id}`,
+    { method: 'PATCH', body: JSON.stringify({ action: 'decision', status, note: note ?? null }) },
+    opts
+  );
+}
+
+export function fetchDecisionsMeta(opts: RequestOptions = {}): Promise<DecisionsMeta> {
+  return jsonFetch('/api/decisions/meta', undefined, opts);
+}
+
+export function fetchDecisionResumes(
+  params: Omit<DecisionFilters, 'userId'> & { page?: number },
+  opts: RequestOptions = {}
+): Promise<DecisionsPage> {
+  const qs = new URLSearchParams();
+  const map: Record<string, string | number | undefined> = {
+    status: params.status,
+    departmentId: params.departmentId,
+    roleTitle: params.roleTitle,
+    query: params.query,
+    from: params.fromJalali,
+    to: params.toJalali,
+    minScore: params.minScore,
+    sort: params.sort,
+    page: params.page,
+  };
+  Object.entries(map).forEach(([k, v]) => {
+    if (v !== undefined && v !== '' && v !== 'all') qs.set(k, String(v));
+  });
+  return jsonFetch(`/api/decisions/resumes?${qs.toString()}`, undefined, opts);
+}
+
+export interface ResumeFileInfo {
+  hasFile: boolean;
+  fileName: string;
+  ext: string;
+  mimeType: string;
+  previewable: boolean;
+}
+
+export function fetchResumeFileInfo(resumeId: string, opts: RequestOptions = {}): Promise<ResumeFileInfo> {
+  return jsonFetch(`/api/resumes/${resumeId}/file-info`, undefined, opts);
+}
+
 export function uploadResumeFileAsync(
   recordId: string,
   fileName: string,
@@ -275,6 +347,20 @@ export function fetchBankResumes(
 export function fileDownloadUrl(resumeId: string): string {
   const uid = getUserId();
   return uid ? `/api/resumes/${resumeId}/file?uid=${encodeURIComponent(uid)}` : `/api/resumes/${resumeId}/file`;
+}
+
+/** Same endpoint rendered in the browser (PDF/image preview) instead of downloaded. */
+export function filePreviewUrl(resumeId: string): string {
+  const uid = getUserId();
+  const base = `/api/resumes/${resumeId}/file?inline=1`;
+  return uid ? `${base}&uid=${encodeURIComponent(uid)}` : base;
+}
+
+/** Preview/QA helper: creates one demo screening session for the current user. */
+export function seedDemoData(
+  opts: RequestOptions = {}
+): Promise<{ batchId: string; created: number }> {
+  return jsonFetch('/api/demo/seed', { method: 'POST' }, { timeoutMs: 90_000, ...opts });
 }
 
 export function fileToBase64(file: File): Promise<string> {

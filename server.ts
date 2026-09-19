@@ -17,8 +17,13 @@ import {
   understandJobV2,
 } from './server/screening-gemini';
 import * as store from './server/screening-store';
+import { seedDemoData } from './server/demo-seed';
 import type {
+  AnalysisMode,
   CandidateEvaluation,
+  DecisionFilters,
+  DecisionStatus,
+  DecidedStatus,
   JobUnderstanding,
   MessageKind,
   Recommendation,
@@ -35,7 +40,45 @@ const MIME: Record<string, string> = {
   rtf: 'application/rtf',
   md: 'text/markdown',
   zip: 'application/zip',
+  // Image resumes are previewed in-app («مشاهده تحلیل و رزومه»), so they need
+  // a real content type instead of the octet-stream fallback.
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
 };
+
+const RESUME_MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  bmp: 'image/bmp',
+  tiff: 'image/tiff',
+  tif: 'image/tiff',
+  gif: 'image/gif',
+};
+
+/** Best-effort mime type for a stored resume (extension first, magic bytes second). */
+function detectResumeMime(fileName: string, base64?: string): string | undefined {
+  const ext = String(fileName).split('.').pop()?.toLowerCase() || '';
+  const byExt = RESUME_MIME[ext];
+  if (byExt) return byExt;
+  if (!base64) return undefined;
+  if (base64.startsWith('JVBERi0')) return 'application/pdf';
+  if (base64.startsWith('/9j/')) return 'image/jpeg';
+  if (base64.startsWith('iVBORw0KGgo')) return 'image/png';
+  if (base64.startsWith('UklGR')) return 'image/webp';
+  if (base64.includes('ftypheic')) return 'image/heic';
+  return undefined;
+}
 
 function recommendationForScore(score: number, u: JobUnderstanding): Recommendation {
   if (score >= u.thresholds.interview) return 'INTERVIEW';
@@ -323,7 +366,16 @@ async function startServer() {
   });
 
   // ---------------- Per-resume actions ----------------
-  app.post('/api/resumes/:id/rerun', async (req, res) => {
+  /**
+   * Shared implementation of «بررسی مجدد» (fast pass) and «بازبینی» (deep pass).
+   * Deep mode sends the original file as well as the extracted text, gives the
+   * model a much bigger budget and asks for extra findings (see EvaluateOptions).
+   */
+  async function rerunResumeHandler(
+    req: express.Request,
+    res: express.Response,
+    mode: AnalysisMode
+  ) {
     try {
       const rec = store.getResumeForUser(req.params.id, requestUserId(req));
       if (!rec || rec.deleted) return res.status(404).json({ error: 'رزومه یافت نشد' });
@@ -332,27 +384,7 @@ async function startServer() {
 
       resetCircuitBreaker();
       const fileData = await store.getResumeFileBase64(rec.id);
-      const ext = String(rec.fileName).split('.').pop()?.toLowerCase() || '';
-      const mimeMap: Record<string, string> = {
-        pdf: 'application/pdf',
-        png: 'image/png',
-        jpg: 'image/jpeg',
-        jpeg: 'image/jpeg',
-        webp: 'image/webp',
-        heic: 'image/heic',
-        heif: 'image/heif',
-        bmp: 'image/bmp',
-        tiff: 'image/tiff',
-        tif: 'image/tiff',
-        gif: 'image/gif',
-      };
-      let mimeType = mimeMap[ext];
-      if (!mimeType && fileData?.base64) {
-        if (fileData.base64.startsWith('JVBERi0')) mimeType = 'application/pdf';
-        else if (fileData.base64.startsWith('/9j/')) mimeType = 'image/jpeg';
-        else if (fileData.base64.startsWith('iVBORw0KGgo')) mimeType = 'image/png';
-        else if (fileData.base64.startsWith('UklGR')) mimeType = 'image/webp';
-      }
+      const mimeType = detectResumeMime(rec.fileName, fileData?.base64);
 
       const evaluation = await evaluateResumeV2(
         batch.departmentName,
@@ -363,16 +395,30 @@ async function startServer() {
         rec.extractedText,
         rec.fileName,
         fileData?.base64,
-        mimeType
+        mimeType,
+        { mode }
       );
-      const updatedRec = store.updateResumeEvaluation(rec.id, evaluation);
+      const updatedRec = store.updateResumeEvaluation(
+        rec.id,
+        evaluation,
+        mode === 'deep' ? 'deep' : 'rerun'
+      );
       const updatedBatch = store.recomputeBatch(batch.id);
-      res.json({ record: updatedRec, stats: updatedBatch?.stats });
+      // `engine` lets the client be honest when هوشا was unavailable and the
+      // local keyword engine answered instead of a real deep review.
+      res.json({ record: updatedRec, stats: updatedBatch?.stats, mode, engine: evaluation.engine });
     } catch (err: any) {
-      console.error('rerun failed:', err?.message);
-      res.status(500).json({ error: err?.message || 'بررسی مجدد ممکن نشد' });
+      console.error(`${mode} rerun failed:`, err?.message);
+      res.status(500).json({
+        error: err?.message || (mode === 'deep' ? 'بازبینی دقیق ممکن نشد' : 'بررسی مجدد ممکن نشد'),
+      });
     }
-  });
+  }
+
+  app.post('/api/resumes/:id/rerun', (req, res) => rerunResumeHandler(req, res, 'standard'));
+
+  /** «بازبینی» — the user asks هوشا to re-read this resume carefully. */
+  app.post('/api/resumes/:id/deep-rerun', (req, res) => rerunResumeHandler(req, res, 'deep'));
 
   app.patch('/api/resumes/:id', (req, res) => {
     const rec = store.getResumeForUser(req.params.id, requestUserId(req));
@@ -385,6 +431,17 @@ async function startServer() {
     }
     if (action === 'message-sent') {
       return res.json({ record: store.markMessageSent(rec.id) });
+    }
+    if (action === 'decision') {
+      const status = String(req.body?.status || '') as DecisionStatus;
+      const allowed: DecisionStatus[] = ['approved', 'rejected', 'review', 'none'];
+      if (!allowed.includes(status)) {
+        return res.status(400).json({ error: 'وضعیت تصمیم نامعتبر است' });
+      }
+      const note = typeof req.body?.note === 'string' ? req.body.note : null;
+      const updated = store.setDecision(rec.id, status, note);
+      const batch = store.getBatch(rec.batchId);
+      return res.json({ record: updated, stats: batch?.stats });
     }
     res.status(400).json({ error: 'عملیات نامعتبر است' });
   });
@@ -430,12 +487,74 @@ async function startServer() {
     const full = store.getResumeFilePath(rec.filePath);
     if (!fs.existsSync(full)) return res.status(404).json({ error: 'فایل روی سرور موجود نیست' });
     const ext = rec.filePath.split('.').pop() || 'bin';
+    // ?inline=1 powers the in-app resume preview («مشاهده تحلیل و رزومه»);
+    // without it the browser downloads the original file.
+    const inline = String(req.query.inline || '') === '1';
     res.setHeader('Content-Type', MIME[ext] || 'application/octet-stream');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename*=UTF-8''${encodeURIComponent(rec.fileName)}`
+      `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(rec.fileName)}`
     );
+    if (inline) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, max-age=300');
+    }
     fs.createReadStream(full).pipe(res);
+  });
+
+  /** Preview metadata so the client knows whether the file can be rendered in-app. */
+  app.get('/api/resumes/:id/file-info', (req, res) => {
+    const uid = requestUserId(req);
+    const rec = store.getResumeForUser(req.params.id, uid) || store.getResume(req.params.id);
+    if (!rec) return res.status(404).json({ error: 'رزومه یافت نشد' });
+    const ext = (rec.filePath || rec.fileName).split('.').pop()?.toLowerCase() || 'bin';
+    res.json({
+      hasFile: Boolean(rec.filePath),
+      fileName: rec.fileName,
+      ext,
+      mimeType: MIME[ext] || 'application/octet-stream',
+      previewable: ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(ext),
+    });
+  });
+
+  // ---------------- Decisions workspace (تایید / رد / نیاز به بررسی) ----------------
+  app.get('/api/decisions/meta', (req, res) => {
+    const userId = requestUserId(req);
+    if (!userId) return res.status(401).json({ error: 'شناسه کاربر ارسال نشد' });
+    const base: DecisionFilters = { userId };
+    res.json({
+      counts: store.decisionCounts(base),
+      positions: store.decisionPositions(base),
+      departments: store.decisionDepartments(userId),
+      knownRoles: store.knownRoleTitles(userId),
+    });
+  });
+
+  app.get('/api/decisions/resumes', (req, res) => {
+    const userId = requestUserId(req);
+    if (!userId) return res.status(401).json({ error: 'شناسه کاربر ارسال نشد' });
+    const q = req.query;
+    const statusRaw = String(q.status || 'approved');
+    const status: DecidedStatus = (['approved', 'rejected', 'review'].includes(statusRaw)
+      ? statusRaw
+      : 'approved') as DecidedStatus;
+    const sortRaw = String(q.sort || 'newest');
+    const result = store.listDecisionResumes({
+      userId,
+      status,
+      departmentId: q.departmentId ? String(q.departmentId) : undefined,
+      roleTitle: q.roleTitle ? String(q.roleTitle) : undefined,
+      query: q.query ? String(q.query) : undefined,
+      fromJalali: q.from ? String(q.from) : undefined,
+      toJalali: q.to ? String(q.to) : undefined,
+      minScore: q.minScore ? Number(q.minScore) : undefined,
+      sort: (['newest', 'oldest', 'score', 'experience'].includes(sortRaw)
+        ? sortRaw
+        : 'newest') as DecisionFilters['sort'],
+      page: q.page ? Number(q.page) : 1,
+      pageSize: 10,
+    });
+    res.json(result);
   });
 
   // ---------------- Messages ----------------
@@ -493,6 +612,21 @@ async function startServer() {
     });
     res.json(result);
   });
+
+  // ---------------- Demo data (preview/QA only) ----------------
+  // Lets a reviewer see every screen without a Gemini key or real uploads.
+  if (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEMO_SEED === '1') {
+    app.post('/api/demo/seed', async (req, res) => {
+      const userId = requestUserId(req);
+      if (!userId) return res.status(400).json({ error: 'شناسه کاربر ارسال نشد' });
+      try {
+        res.json(await seedDemoData(userId));
+      } catch (err: any) {
+        console.error('demo seed failed:', err?.message);
+        res.status(500).json({ error: err?.message || 'ساخت داده نمونه ممکن نشد' });
+      }
+    });
+  }
 
   app.get('/api/bank/search', (req, res) => {
     res.json({ items: store.globalBankSearch(String(req.query.q || ''), 20, requestUserId(req) || undefined) });
