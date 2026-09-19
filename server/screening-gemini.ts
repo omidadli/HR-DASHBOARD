@@ -43,18 +43,30 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 export function resolveGeminiModel(): string {
+  // Active recommended production model: gemini-3.6-flash
+  // Filter out retired/deprecated models (2.5, 2.0, 1.5) and 3.8-flash (which has a strict 20 req/day quota)
   const envModel = process.env.GEMINI_MODEL?.trim();
   if (envModel) {
     const clean = envModel.replace(/^models\//, '');
+    const forbidden = [
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
+      'gemini-2.0-flash',
+      'gemini-2.0-flash-exp',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      'gemini-3.8-flash',
+    ];
     if (
       clean.startsWith('gemini-') &&
+      !forbidden.includes(clean) &&
       !clean.includes(' ') &&
       clean.length < 50
     ) {
       return clean;
     }
   }
-  return 'gemini-3.8-flash';
+  return 'gemini-3.6-flash';
 }
 
 /** Robust JSON extraction: strips markdown fences, finds outermost JSON, fixes trailing commas/control chars. */
@@ -136,39 +148,35 @@ export function recordGeminiSuccess() {
   circuitConsecutiveFailures = 0;
   circuitOpenUntil = 0;
 }
+export function resetCircuitBreaker() {
+  circuitConsecutiveFailures = 0;
+  circuitOpenUntil = 0;
+}
 export function recordGeminiFailure(isQuota: boolean, isHighDemand: boolean) {
   // 503 high demand spikes are temporary model-level spikes, not quota depletion
   if (isHighDemand) return;
   circuitConsecutiveFailures++;
-  if (circuitConsecutiveFailures >= 3) {
-    // Long enough to let a rate-limited key recover, short enough that the user
-    // does not have to wait through a whole batch of failing calls.
-    const cooldownMs = isQuota ? 30_000 : 10_000;
+  if (circuitConsecutiveFailures >= 5) {
+    // Cooldown only after 5 consecutive complete failures across all models
+    const cooldownMs = isQuota ? 15_000 : 8_000;
     circuitOpenUntil = Date.now() + cooldownMs;
   }
 }
 
-/** 400/401/403/404 mean the key or model name is wrong — retrying is pointless. */
+/** 401/403 or invalid API key mean the key is broken — retrying with other models is pointless. */
 function isFatalAuthError(err: any): boolean {
   const status = err?.status || err?.code;
   const msg = String(err?.message || '');
   return (
-    status === 400 ||
     status === 401 ||
     status === 403 ||
-    status === 404 ||
-    /API key not valid|API_KEY_INVALID|PERMISSION_DENIED|NOT_FOUND|is not found/i.test(msg)
+    (status === 400 && /API key not valid|API_KEY_INVALID/i.test(msg)) ||
+    /API key not valid|API_KEY_INVALID/i.test(msg)
   );
 }
 
 /**
  * One Gemini call with a small, *bounded* retry budget.
- *
- * Previously this walked 4 candidate models × 2 attempts × 18 s and ignored the
- * circuit breaker entirely, so a rate-limited key made every single resume burn
- * ~2.5 minutes before falling back to the local engine — a 5-resume batch then
- * looked completely frozen. Now: the breaker is honoured, fatal auth errors stop
- * immediately, and a hard deadline caps the whole operation.
  */
 async function generateWithFallback(
   contents: string | { parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> },
@@ -186,11 +194,9 @@ async function generateWithFallback(
 
   const client = getGeminiClient();
   const primary = resolveGeminiModel();
-  // Two models is enough: a third/fourth candidate only added minutes of latency
-  // in the failure path without measurably improving success.
-  const candidateModels = Array.from(new Set([primary, 'gemini-2.5-flash']));
-  const perCallTimeout = config?.timeoutMs ?? 18_000;
-  const deadline = Date.now() + (config?.deadlineMs ?? 45_000);
+  const candidateModels = Array.from(new Set([primary, 'gemini-3.6-flash', 'gemini-flash-lite-latest', 'gemini-3.1-flash-lite']));
+  const perCallTimeout = config?.timeoutMs ?? 22_000;
+  const deadline = Date.now() + (config?.deadlineMs ?? 48_000);
 
   let lastError: any = null;
 
@@ -236,10 +242,11 @@ async function generateWithFallback(
           // Same key for every model — stop the whole cascade now.
           break outer;
         }
-        if (isHighDemand && attempt < maxAttempts && Date.now() + 1500 < deadline) {
-          await sleep(1000 + Math.floor(Math.random() * 500));
+        if (isHighDemand && attempt < maxAttempts && Date.now() + 2000 < deadline) {
+          await sleep(1200 + Math.floor(Math.random() * 500));
           continue;
         }
+        console.warn(`[Gemini] model ${model} (attempt ${attempt}) failed: ${msg.slice(0, 100)}. Falling over if candidates remain.`);
         break;
       } finally {
         if (timer) clearTimeout(timer);
@@ -688,8 +695,8 @@ ${QUESTION_EXAMPLE_JSON}`;
   const callAndRepair = async (): Promise<JobUnderstanding | null> => {
     const raw = await generateWithFallback(prompt, {
       temperature: 0.2,
-      timeoutMs: 20_000,
-      deadlineMs: 25_000,
+      timeoutMs: 25_000,
+      deadlineMs: 45_000,
     });
     const parsed = cleanAndParseJson<any>(raw, null);
     if (!parsed) return null;
@@ -819,14 +826,37 @@ export async function evaluateResumeV2(
   fileMimeType?: string
 ): Promise<CandidateEvaluation> {
   const normalized = normalizePersianText(resumeText || '');
-  const hasText = Boolean(normalized && normalized.trim().length >= 50);
+  const hasText = Boolean(normalized && normalized.trim().length >= 30);
+
+  // Auto-detect or normalize fileMimeType from fileName or base64 if not provided
+  let effectiveMime = fileMimeType;
+  if (!effectiveMime && fileBase64 && fileBase64.length > 20) {
+    const ext = fileName.split('.').pop()?.toLowerCase() || '';
+    if (ext === 'pdf' || fileBase64.startsWith('JVBERi0')) {
+      effectiveMime = 'application/pdf';
+    } else if (['jpg', 'jpeg'].includes(ext) || fileBase64.startsWith('/9j/')) {
+      effectiveMime = 'image/jpeg';
+    } else if (ext === 'png' || fileBase64.startsWith('iVBORw0KGgo')) {
+      effectiveMime = 'image/png';
+    } else if (ext === 'webp' || fileBase64.startsWith('UklGR')) {
+      effectiveMime = 'image/webp';
+    } else if (['heic', 'heif'].includes(ext) || fileBase64.includes('ftypheic')) {
+      effectiveMime = 'image/heic';
+    } else if (ext === 'bmp') {
+      effectiveMime = 'image/bmp';
+    } else if (['tiff', 'tif'].includes(ext)) {
+      effectiveMime = 'image/tiff';
+    }
+  }
+
   const isMultimodal = Boolean(
     fileBase64 &&
-    (fileMimeType === 'application/pdf' || fileMimeType?.startsWith('image/'))
+    effectiveMime &&
+    (effectiveMime === 'application/pdf' || effectiveMime.startsWith('image/'))
   );
 
   if (!hasText && !isMultimodal) {
-    const ev = emptyEvaluation('متن استخراج‌شده از رزومه برای تحلیل تخصصی کافی نیست (احتمالاً فایل خالی یا خراب است).');
+    const ev = emptyEvaluation('متن استخراج‌شده از رزومه برای تحلیل تخصصی کافی نیست (فایل خالی یا غیرقابل بازخوانی است).');
     ev.flags.scannedNoText = true;
     return ev;
   }
@@ -836,7 +866,21 @@ export async function evaluateResumeV2(
     .join('\n');
   const answersBrief = buildAnswersBrief(understanding, answers);
 
-  const isUsingVision = !hasText && isMultimodal;
+  let fileContentSection = '';
+  if (isMultimodal && hasText) {
+    fileContentSection = `فایل رزومه (PDF یا تصویر) ضمیمه شده است و متن استخراج‌شده از آن نیز در زیر آمده است:
+"""
+${normalized.slice(0, 8500)}
+"""
+لطفاً فایل ضمیمه و متن را کامل و تطبیقی بررسی کن.`;
+  } else if (isMultimodal) {
+    fileContentSection = `رزومه به‌صورت فایل ضمیمه (PDF یا تصویر اسکن‌شده) همراه این درخواست ارسال شده است. لطفاً تمام لایه‌ها، جداول، متون فارسی و انگلیسی، سوابق و مشخصات آن را مستقیماً از روی فایل با دقت بالا استخراج و تحلیل کن.`;
+  } else {
+    fileContentSection = `متن رزومه:
+"""
+${normalized.slice(0, 8500)}
+"""`;
+  }
 
   const prompt = `تو یک کارشناس ارشد و بسیار دقیق غربالگری رزومه در هلدینگ تولیدی «سیلانه سبز» هستی.
 یک رزومه را موشکافانه با شرایط شغل می‌سنجی.
@@ -857,14 +901,7 @@ ${answersBrief}
 - زیر ${understanding.thresholds.review} = REJECT (رد شود)
 
 نام فایل رزومه: ${fileName}
-${
-  isUsingVision
-    ? `رزومه به‌صورت فایل ضمیمه (PDF یا تصویر اسکن‌شده) همراه این درخواست ارسال شده است. لطفاً تمام لایه‌ها، جداول، متون فارسی و انگلیسی، سوابق و مشخصات آن را مستقیماً از روی فایل با دقت استخراج و تحلیل کن.`
-    : `متن رزومه:
-"""
-${normalized.slice(0, 8500)}
-"""`
-}
+${fileContentSection}
 
 قوانین نقض‌ناپذیر:
 ۱. فقط بر اساس چیزی که واقعاً در محتوای رزومه آمده قضاوت کن. هرگز نام، عدد، سابقه، مدرک یا مهارتی را حدس نزن یا به نام فایل نسبت نده. اگر اطلاعاتی در رزومه نبود، null بده.
@@ -907,12 +944,12 @@ ${normalized.slice(0, 8500)}
 }`;
 
   try {
-    const contents = isUsingVision && fileBase64 && fileMimeType
+    const contents = isMultimodal && fileBase64 && effectiveMime
       ? {
           parts: [
             {
               inlineData: {
-                mimeType: fileMimeType,
+                mimeType: effectiveMime,
                 data: fileBase64,
               },
             },
@@ -1092,6 +1129,16 @@ export function evaluateResumeLocal(
   }
   if (!candidateName && head[0] && head[0].length <= 30 && /^[\u0600-\u06FF\sA-Za-z.]+$/.test(head[0])) {
     candidateName = head[0];
+  }
+  if (!candidateName && fileName) {
+    const cleanFile = fileName
+      .replace(/\.[a-zA-Z0-9]+$/, '')
+      .replace(/[_\-]+/g, ' ')
+      .replace(/^(resume|cv|رزومه)\s*/i, '')
+      .trim();
+    if (cleanFile.length >= 3 && cleanFile.length <= 35 && !/^(image|file|scan|photo|عکس|تصویر|\d+)$/i.test(cleanFile)) {
+      candidateName = cleanFile;
+    }
   }
 
   const phoneMatch = digitsText.match(/(?:\+98|0098|98|0)?9\d{9}/);

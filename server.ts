@@ -13,6 +13,7 @@ import {
   computeStats,
   draftMessageV2,
   evaluateResumeV2,
+  resetCircuitBreaker,
   understandJobV2,
 } from './server/screening-gemini';
 import * as store from './server/screening-store';
@@ -167,22 +168,56 @@ async function startServer() {
       if (!fileName) return res.status(400).json({ error: 'نام فایل الزامی است' });
 
       let evaluation: CandidateEvaluation | undefined;
-      let reason: string | null = unjudgeableReason ? String(unjudgeableReason) : null;
+      let reason: string | null = null;
 
-      if (!reason && !errorMessage) {
-        const text = String(extractedText || '');
+      // If we have file data or extracted text, always attempt evaluation!
+      const hasData =
+        (typeof fileBase64 === 'string' && fileBase64.length > 50) ||
+        (typeof extractedText === 'string' && extractedText.trim().length > 0);
+
+      if (hasData && !errorMessage) {
+        let text = String(extractedText || '');
         const ext = String(fileName).split('.').pop()?.toLowerCase() || '';
+
+        // If it's a Word document or text file and extractedText is sparse, attempt server extraction from buffer
+        if ((!text || text.trim().length < 30) && typeof fileBase64 === 'string' && fileBase64.length > 50) {
+          try {
+            const buf = Buffer.from(fileBase64, 'base64');
+            if (ext === 'docx') {
+              const mammoth = await import('mammoth');
+              const mRes = await mammoth.extractRawText({ buffer: buf });
+              if (mRes?.value && mRes.value.trim().length > 10) {
+                text = mRes.value.trim();
+              }
+            } else if (['txt', 'rtf', 'md', 'text', 'csv', 'log'].includes(ext)) {
+              text = buf.toString('utf8').trim();
+            }
+          } catch (serverExtractErr) {
+            console.warn('Server fallback extraction error:', serverExtractErr);
+          }
+        }
+
         const mimeMap: Record<string, string> = {
           pdf: 'application/pdf',
           png: 'image/png',
           jpg: 'image/jpeg',
           jpeg: 'image/jpeg',
           webp: 'image/webp',
+          heic: 'image/heic',
+          heif: 'image/heif',
+          bmp: 'image/bmp',
+          tiff: 'image/tiff',
+          tif: 'image/tiff',
+          gif: 'image/gif',
         };
-        // Multimodal (vision) is only valid for real PDF/image payloads — text
-        // formats (docx/txt/…) must not be sent to the vision path with a fake
-        // PDF mime type.
-        const mimeType = mimeMap[ext];
+        let mimeType = mimeMap[ext];
+        if (!mimeType && typeof fileBase64 === 'string') {
+          if (fileBase64.startsWith('JVBERi0')) mimeType = 'application/pdf';
+          else if (fileBase64.startsWith('/9j/')) mimeType = 'image/jpeg';
+          else if (fileBase64.startsWith('iVBORw0KGgo')) mimeType = 'image/png';
+          else if (fileBase64.startsWith('UklGR')) mimeType = 'image/webp';
+          else if (fileBase64.includes('ftypheic')) mimeType = 'image/heic';
+        }
 
         evaluation = await evaluateResumeV2(
           batch.departmentName,
@@ -198,6 +233,8 @@ async function startServer() {
         if (evaluation.flags.scannedNoText) {
           reason = 'فایل رزومه فاقد محتوای خواندنی است (فایل خالی، اسکن ناخوانا یا تصویر بدون متن)';
         }
+      } else if (unjudgeableReason) {
+        reason = String(unjudgeableReason);
       }
 
       const record = await store.saveEvaluation({
@@ -293,6 +330,30 @@ async function startServer() {
       const batch = store.getBatch(rec.batchId);
       if (!batch) return res.status(404).json({ error: 'نشست یافت نشد' });
 
+      resetCircuitBreaker();
+      const fileData = await store.getResumeFileBase64(rec.id);
+      const ext = String(rec.fileName).split('.').pop()?.toLowerCase() || '';
+      const mimeMap: Record<string, string> = {
+        pdf: 'application/pdf',
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        webp: 'image/webp',
+        heic: 'image/heic',
+        heif: 'image/heif',
+        bmp: 'image/bmp',
+        tiff: 'image/tiff',
+        tif: 'image/tiff',
+        gif: 'image/gif',
+      };
+      let mimeType = mimeMap[ext];
+      if (!mimeType && fileData?.base64) {
+        if (fileData.base64.startsWith('JVBERi0')) mimeType = 'application/pdf';
+        else if (fileData.base64.startsWith('/9j/')) mimeType = 'image/jpeg';
+        else if (fileData.base64.startsWith('iVBORw0KGgo')) mimeType = 'image/png';
+        else if (fileData.base64.startsWith('UklGR')) mimeType = 'image/webp';
+      }
+
       const evaluation = await evaluateResumeV2(
         batch.departmentName,
         batch.roleTitle,
@@ -300,7 +361,9 @@ async function startServer() {
         batch.understanding,
         batch.answers,
         rec.extractedText,
-        rec.fileName
+        rec.fileName,
+        fileData?.base64,
+        mimeType
       );
       const updatedRec = store.updateResumeEvaluation(rec.id, evaluation);
       const updatedBatch = store.recomputeBatch(batch.id);

@@ -22,7 +22,7 @@ export interface RunnerInput {
  * attaching the original document (the text is still analysed) so a single
  * huge scan cannot blow up the request payload and stall the queue.
  */
-const MAX_INLINE_FILE_BYTES = 12 * 1024 * 1024;
+const MAX_INLINE_FILE_BYTES = 20 * 1024 * 1024;
 
 /** If nothing has moved for this long, tell the user instead of spinning silently. */
 const STALL_WARNING_MS = 45_000;
@@ -211,8 +211,7 @@ export async function runScreeningBatch(
 
       try {
         if (item.file) {
-          // Extraction and base64 run in parallel, but the base64 is only kept
-          // when it can actually be used (see MAX_INLINE_FILE_BYTES).
+          // Extraction and base64 run in parallel
           const wantsAttachment = item.file.size <= MAX_INLINE_FILE_BYTES;
           const [extraction, base64] = await Promise.all([
             extractResumeContent(item.file, item.name),
@@ -222,13 +221,11 @@ export async function runScreeningBatch(
           extractionByItem.set(item.id, extraction);
           if (base64) base64ByItem.set(item.id, base64);
 
-          if (extraction.isVisualDocument) {
-            // Visual document (image or scanned PDF) - queue for Gemini native vision processing
-            item.status = 'queued';
-          } else if (!extraction.success) {
+          if (item.file.size === 0) {
             item.status = 'unjudgeable';
-            item.unjudgeableReason = extraction.unjudgeableReason || 'امکان استخراج محتوا وجود ندارد';
+            item.unjudgeableReason = 'فایل خالی و بدون محتواست (حجم صفر بایت)';
           } else {
+            // Non-empty file: always queue for evaluation so Gemini vision or server can analyze it
             item.status = 'queued';
           }
         } else {
@@ -236,9 +233,8 @@ export async function runScreeningBatch(
         }
       } catch (err: any) {
         if (err?.name === 'AbortError') throw err;
-        // One unreadable file must not take the whole queue down with it.
-        item.status = 'unjudgeable';
-        item.unjudgeableReason = err?.message || 'خطا در بازخوانی فایل';
+        // Never stall or drop a file before server gets to try
+        item.status = 'queued';
       }
 
       extractedCount++;

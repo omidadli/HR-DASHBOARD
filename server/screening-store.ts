@@ -539,3 +539,17 @@ export function globalBankSearch(query: string, limit = 20, userId?: string): Re
     )
     .slice(0, limit);
 }
+
+export async function getResumeFileBase64(recordId: string): Promise<{ base64: string; fileName: string } | null> {
+  const rec = resumes.get(recordId);
+  if (!rec || !rec.filePath) return null;
+  try {
+    const fullPath = path.join(RESUMES_DIR, rec.filePath);
+    const buf = await fs.promises.readFile(fullPath);
+    return { base64: buf.toString('base64'), fileName: rec.fileName };
+  } catch (err) {
+    console.warn(`[store] Could not read resume file for ${recordId}:`, err);
+    return null;
+  }
+}
+

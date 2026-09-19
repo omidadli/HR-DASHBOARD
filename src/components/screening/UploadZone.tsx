@@ -99,7 +99,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.docx,.doc,.zip,.txt,.rtf,.md,.jpg,.jpeg,.png,.webp"
+          accept=".pdf,.docx,.doc,.zip,.txt,.rtf,.md,.jpg,.jpeg,.png,.webp,.heic,.heif,.odt,.pages,.bmp,.tiff,.tif,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/zip,text/*"
           onChange={onPick}
           className="hidden"
           disabled={disabled}
@@ -111,7 +111,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
           رزومه‌ها را اینجا رها کنید یا برای انتخاب کلیک کنید
         </div>
         <div className="text-xs text-text-3">
-          کشیدن و رها کردن یا کلیک برای انتخاب — PDF (متنی/اسکن‌شده)، Word، تصاویر رزومه، TXT، و فایل فشرده ZIP (حتی بیش از ۲۰۰ رزومه)
+          پشتیبانی از هرگونه فرمت: PDF (متنی و اسکن‌شده)، Word (DOCX/DOC)، تصاویر (JPG/PNG/HEIC آیفون)، فایل‌های متنی و آرشیوهای ZIP
         </div>
       </div>
 

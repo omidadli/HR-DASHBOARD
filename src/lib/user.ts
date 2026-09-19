@@ -14,10 +14,24 @@ export interface StoredUser {
 }
 
 const STORAGE_KEY = 'seilaneh.app.user.v1';
+let memoryUser: StoredUser | null = null;
+
+function getStorage(): Storage | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
+    if (typeof localStorage !== 'undefined') return localStorage;
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 export function getStoredUser(): StoredUser | null {
+  if (memoryUser) return memoryUser;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const storage = getStorage();
+    if (!storage) return null;
+    const raw = storage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (
@@ -27,11 +41,12 @@ export function getStoredUser(): StoredUser | null {
       typeof parsed.name === 'string' &&
       parsed.name.trim()
     ) {
-      return { id: parsed.id, name: parsed.name, createdAtISO: parsed.createdAtISO || '' };
+      memoryUser = { id: parsed.id, name: parsed.name, createdAtISO: parsed.createdAtISO || '' };
+      return memoryUser;
     }
     return null;
   } catch {
-    return null;
+    return memoryUser;
   }
 }
 
@@ -47,8 +62,12 @@ export function registerUser(name: string): StoredUser {
     name: clean,
     createdAtISO: new Date().toISOString(),
   };
+  memoryUser = user;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+    const storage = getStorage();
+    if (storage) {
+      storage.setItem(STORAGE_KEY, JSON.stringify(user));
+    }
   } catch {
     // Private mode etc. — the in-memory identity still works for this session.
   }
@@ -67,7 +86,8 @@ export function timeGreeting(now: Date = new Date()): string {
       hour: '2-digit',
       hour12: false,
     }).format(now);
-    hour = Number(h) % 24; // en-GB may emit "24" at midnight
+    const num = parseInt(h, 10);
+    hour = !isNaN(num) ? num % 24 : now.getHours();
   } catch {
     hour = now.getHours();
   }

@@ -37,6 +37,7 @@ export default defineConfig(() => {
     build: {
       // Explicit, and low enough that esbuild down-levels syntax for iOS 14.
       target: ['es2020', 'safari14'],
+      cssTarget: 'safari14',
       chunkSizeWarningLimit: 900,
       rollupOptions: {
         output: {

@@ -436,7 +436,28 @@ button.bg-brand:disabled,
   }
 }
 
-/* Touch momentum scroll for iOS */
+/* Touch momentum scroll and iOS Safari optimization */
 .touch-scroll {
   -webkit-overflow-scrolling: touch;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  min-height: 100%;
+  min-height: -webkit-fill-available;
+}
+
+@media screen and (max-width: 767px) {
+  /* Prevent iOS Safari from auto-zooming into inputs */
+  input[type="text"],
+  input[type="number"],
+  input[type="search"],
+  input[type="email"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }
