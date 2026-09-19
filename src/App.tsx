@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Sparkles, Library } from 'lucide-react';
 import { SilanehLogo } from './components/common/SilanehLogo';
 import {
@@ -57,6 +57,19 @@ export function App() {
   const [batchId, setBatchId] = useState<string | null>(null);
   const [homeNonce, setHomeNonce] = useState(0); // remount home after finishing a batch
   const abortRef = useRef<AbortController | null>(null);
+
+  // React committed: remove the pre-React boot overlay from index.html. If this
+  // never runs, the watchdog in index.html reports the failure to the user.
+  useEffect(() => {
+    window.__hooshaBoot?.hide();
+  }, []);
+
+  /**
+   * Stable identities. SplashScreen/WelcomeGate used to receive a fresh arrow
+   * function on every render, which re-ran their timer effects and cancelled
+   * the very timers that dismiss the overlay.
+   */
+  const handleSplashComplete = useCallback(() => setShowSplash(false), []);
 
   const start = async (payload: StartPayload) => {
     setProcessingError(null);
@@ -230,7 +243,7 @@ export function App() {
 
       <Toaster />
       {showSplash && user && (
-        <SplashScreen userName={user.name} onComplete={() => setShowSplash(false)} />
+        <SplashScreen userName={user.name} onComplete={handleSplashComplete} />
       )}
       {!user && <WelcomeGate onComplete={handleRegistered} />}
     </div>

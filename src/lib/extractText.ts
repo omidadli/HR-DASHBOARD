@@ -1,15 +1,7 @@
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import { normalizePersianText } from './normalizeFa';
-
-// Configure pdfjs worker via Vite static asset URL
-try {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
-} catch (e) {
-  console.warn('Could not set workerSrc immediately:', e);
-}
 
 export interface TextExtractionResult {
   text: string;
@@ -24,8 +16,51 @@ export interface UnpackedFile {
   size: number;
 }
 
+/** Upper bound on parsed PDF pages: a 300-page scan must not freeze the queue. */
+const MAX_PDF_PAGES = 40;
+/** Hard wall-clock budget for opening + reading a single document. */
+const DOCUMENT_TIMEOUT_MS = 45_000;
+
+/** pdf.js is heavy (~1.2 MB); load it only when a PDF actually shows up. */
+type PdfJsModule = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
+let pdfjsPromise: Promise<PdfJsModule> | null = null;
+
+function loadPdfJs(): Promise<PdfJsModule> {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs')
+      .then((mod) => {
+        const lib = (mod as any).default ?? mod;
+        // Same-origin worker only. The previous cdnjs.cloudflare.com fallback
+        // pointed at a pdf.js version that does not exist there for v6 and is
+        // frequently blocked on Iranian networks, which made extraction hang.
+        try {
+          lib.GlobalWorkerOptions.workerSrc = pdfWorker;
+        } catch (e) {
+          console.warn('Could not set pdf.js workerSrc:', e);
+        }
+        return lib as PdfJsModule;
+      })
+      .catch((err) => {
+        pdfjsPromise = null; // allow a retry on the next file
+        throw err;
+      });
+  }
+  return pdfjsPromise;
+}
+
 function getExtension(fileName: string): string {
   return fileName.split('.').pop()?.toLowerCase() || '';
+}
+
+/** Rejects with a readable Persian error once `ms` elapses. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} بیش از ${Math.round(ms / 1000)} ثانیه طول کشید`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
 }
 
 /**
@@ -34,16 +69,19 @@ function getExtension(fileName: string): string {
 function extractFromDocBinary(buffer: ArrayBuffer): string {
   try {
     const bytes = new Uint8Array(buffer);
+    // Large legacy .doc files produce huge intermediate strings; cap the scan
+    // so a single file cannot stall the main thread on a phone.
+    const window = bytes.length > 4_000_000 ? bytes.subarray(0, 4_000_000) : bytes;
     const textDecoder = new TextDecoder('utf-8', { fatal: false });
     // Look for UTF-16LE text streams common in Word FIB structures
     const utf16Decoder = new TextDecoder('utf-16le', { fatal: false });
-    const utf16Text = utf16Decoder.decode(bytes);
+    const utf16Text = utf16Decoder.decode(window);
     // Filter out control and noise characters
     const cleanU16 = utf16Text.replace(/[^\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF\w\s.,;:!?@#%&*()_\-+=/]/g, ' ').replace(/\s{2,}/g, ' ');
     if (cleanU16.trim().length > 100) {
       return cleanU16.trim();
     }
-    const plainText = textDecoder.decode(bytes);
+    const plainText = textDecoder.decode(window);
     const cleanPlain = plainText.replace(/[^\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF\w\s.,;:!?@#%&*()_\-+=/]/g, ' ').replace(/\s{2,}/g, ' ');
     return cleanPlain.trim();
   } catch {
@@ -56,114 +94,117 @@ function extractFromDocBinary(buffer: ArrayBuffer): string {
  * Detects two-column resumes and sorts items reading-order (Y descending, X ascending or right-to-left for Persian).
  */
 async function extractFromPdfWithCoordinates(buffer: ArrayBuffer): Promise<string> {
-  // Ensure worker is configured or fallback
-  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
-  }
+  const pdfjsLib = await loadPdfJs();
 
-  let pdf;
+  // getDocument never rejects when the worker cannot be fetched — it just
+  // hangs. The timeout is what keeps a single bad PDF from freezing the batch.
+  const loadingTask = pdfjsLib.getDocument({ data: buffer, useSystemFonts: true });
+  const pdf = await withTimeout(loadingTask.promise, DOCUMENT_TIMEOUT_MS, 'باز کردن فایل PDF');
+
   try {
-    const loadingTask = pdfjsLib.getDocument({
-      data: buffer,
-      useSystemFonts: true,
-    });
-    pdf = await loadingTask.promise;
-  } catch (err: any) {
-    console.warn('Standard PDF worker task failed, trying CDN fallback worker...', err);
-    try {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version || '4.10.38'}/pdf.worker.min.mjs`;
-      const fallbackTask = pdfjsLib.getDocument({
-        data: buffer,
-        useSystemFonts: true,
-      });
-      pdf = await fallbackTask.promise;
-    } catch (fallbackErr: any) {
-      throw new Error(`خطا در پردازش لایه PDF: ${err?.message || fallbackErr?.message || 'قالب فایل پشتیبانی نشد'}`);
-    }
-  }
-  const pageTexts: string[] = [];
+    const pageTexts: string[] = [];
+    const pageCount = Math.min(pdf.numPages, MAX_PDF_PAGES);
 
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 1.0 });
-    const content = await page.getTextContent();
+    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1.0 });
+      const content = await page.getTextContent();
 
-    interface TextItemPos {
-      str: string;
-      x: number;
-      y: number; // in PDF coords, y is from bottom, so viewport.height - y is from top
-      height: number;
-    }
+      interface TextItemPos {
+        str: string;
+        x: number;
+        y: number; // in PDF coords, y is from bottom, so viewport.height - y is from top
+        height: number;
+      }
 
-    const items: TextItemPos[] = [];
-    for (const item of content.items) {
-      if ('str' in item && item.str.trim()) {
-        const tx = item.transform[4];
-        const ty = viewport.height - item.transform[5]; // top-down coordinate
-        items.push({
-          str: item.str,
-          x: tx,
-          y: ty,
-          height: item.height || 10,
+      const items: TextItemPos[] = [];
+      for (const item of content.items) {
+        if ('str' in item && item.str.trim()) {
+          const tx = item.transform[4];
+          const ty = viewport.height - item.transform[5]; // top-down coordinate
+          items.push({
+            str: item.str,
+            x: tx,
+            y: ty,
+            height: item.height || 10,
+          });
+        }
+      }
+
+      if (items.length === 0) continue;
+
+      // Check if the page looks like a 2-column layout
+      // Midpoint along page width
+      const midX = viewport.width / 2;
+      const leftCount = items.filter((it) => it.x < midX - 20).length;
+      const rightCount = items.filter((it) => it.x > midX + 20).length;
+      const isTwoColumn = leftCount > 15 && rightCount > 15;
+
+      let sortedText = '';
+
+      if (isTwoColumn) {
+        // In RTL Persian layouts, right column is read first, then left column (or vice versa for English)
+        // Check Persian text ratio on right side vs left side
+        const rightItems = items.filter((it) => it.x >= midX - 20);
+        const leftItems = items.filter((it) => it.x < midX - 20);
+
+        // Sort by Y ascending (from top to bottom), then X
+        const sortColumn = (colItems: TextItemPos[]) => {
+          return colItems
+            .sort((a, b) => {
+              const yDiff = a.y - b.y;
+              if (Math.abs(yDiff) > 6) return yDiff; // Different lines
+              return b.x - a.x; // RTL line reading
+            })
+            .map((i) => i.str)
+            .join(' ');
+        };
+
+        // Right column first (Persian RTL reading order), then Left column
+        const rightText = sortColumn(rightItems);
+        const leftText = sortColumn(leftItems);
+        sortedText = `${rightText}\n\n${leftText}`;
+      } else {
+        // Standard single column: sort lines top to bottom
+        // Group items with similar Y into lines
+        items.sort((a, b) => {
+          const yDiff = a.y - b.y;
+          if (Math.abs(yDiff) > 6) return yDiff;
+          return b.x - a.x; // Right to left
         });
+        sortedText = items.map((i) => i.str).join(' ');
+      }
+
+      pageTexts.push(sortedText);
+      // Release the page proxy so long PDFs do not pile up in memory.
+      try {
+        await page.cleanup();
+      } catch {
+        /* ignore */
       }
     }
 
-    if (items.length === 0) continue;
-
-    // Check if the page looks like a 2-column layout
-    // Midpoint along page width
-    const midX = viewport.width / 2;
-    const leftCount = items.filter((it) => it.x < midX - 20).length;
-    const rightCount = items.filter((it) => it.x > midX + 20).length;
-    const isTwoColumn = leftCount > 15 && rightCount > 15;
-
-    let sortedText = '';
-
-    if (isTwoColumn) {
-      // In RTL Persian layouts, right column is read first, then left column (or vice versa for English)
-      // Check Persian text ratio on right side vs left side
-      const rightItems = items.filter((it) => it.x >= midX - 20);
-      const leftItems = items.filter((it) => it.x < midX - 20);
-
-      // Sort by Y ascending (from top to bottom), then X
-      const sortColumn = (colItems: TextItemPos[]) => {
-        return colItems
-          .sort((a, b) => {
-            const yDiff = a.y - b.y;
-            if (Math.abs(yDiff) > 6) return yDiff; // Different lines
-            return b.x - a.x; // RTL line reading
-          })
-          .map((i) => i.str)
-          .join(' ');
-      };
-
-      // Right column first (Persian RTL reading order), then Left column
-      const rightText = sortColumn(rightItems);
-      const leftText = sortColumn(leftItems);
-      sortedText = `${rightText}\n\n${leftText}`;
-    } else {
-      // Standard single column: sort lines top to bottom
-      // Group items with similar Y into lines
-      items.sort((a, b) => {
-        const yDiff = a.y - b.y;
-        if (Math.abs(yDiff) > 6) return yDiff;
-        return b.x - a.x; // Right to left
-      });
-      sortedText = items.map((i) => i.str).join(' ');
+    return pageTexts.join('\n\n').trim();
+  } finally {
+    // Frees the worker + the document buffer; without this, a batch of large
+    // PDFs keeps every document alive until the tab is closed.
+    try {
+      await loadingTask.destroy();
+    } catch {
+      /* ignore */
     }
-
-    pageTexts.push(sortedText);
   }
-
-  return pageTexts.join('\n\n').trim();
 }
 
 /**
  * Extract text from DOCX
  */
 async function extractFromDocx(buffer: ArrayBuffer): Promise<string> {
-  const result = await mammoth.extractRawText({ arrayBuffer: buffer });
+  const result = await withTimeout(
+    mammoth.extractRawText({ arrayBuffer: buffer }),
+    DOCUMENT_TIMEOUT_MS,
+    'باز کردن فایل Word'
+  );
   return (result.value || '').trim();
 }
 
@@ -181,7 +222,11 @@ export async function extractResumeContent(file: File | Blob, fileName: string):
   const ext = getExtension(fileName);
 
   try {
-    const buffer = await file.arrayBuffer();
+    const buffer = await withTimeout(
+      file.arrayBuffer(),
+      DOCUMENT_TIMEOUT_MS,
+      'خواندن فایل'
+    );
 
     if (ext === 'pdf') {
       const rawText = await extractFromPdfWithCoordinates(buffer);
@@ -275,7 +320,7 @@ export async function processUploadFiles(
     if (ext === 'zip') {
       try {
         const zip = new JSZip();
-        const loaded = await zip.loadAsync(f);
+        const loaded = await withTimeout(zip.loadAsync(f), 120_000, 'باز کردن فایل فشرده');
         const entries = Object.keys(loaded.files);
 
         // Filter valid resume entries
@@ -302,6 +347,9 @@ export async function processUploadFiles(
           if (onProgress) {
             onProgress(count, validKeys.length, innerFileName);
           }
+          // Yield to the event loop so the progress UI stays responsive on
+          // phones while a large archive is being unpacked.
+          await new Promise((r) => setTimeout(r, 0));
         }
       } catch (err) {
         console.error('Error unpacking zip file:', err);

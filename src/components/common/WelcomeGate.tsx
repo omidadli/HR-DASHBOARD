@@ -39,6 +39,18 @@ export const WelcomeGate: React.FC<WelcomeGateProps> = ({ onComplete }) => {
     holdTimer.current = setTimeout(() => setStep('ask'), 3000);
   };
 
+  /**
+   * This overlay is the only way in for a first-time visitor, so it must never
+   * depend on the typing animation completing. If the greeting has not finished
+   * within 12s (background tab, throttled timers, an aborted animation) the
+   * name form is shown anyway instead of leaving the user locked out.
+   */
+  useEffect(() => {
+    if (step !== 'hello') return;
+    const watchdog = setTimeout(() => setStep('ask'), 12000);
+    return () => clearTimeout(watchdog);
+  }, [step]);
+
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
     const clean = name.trim();

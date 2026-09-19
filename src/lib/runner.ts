@@ -4,7 +4,7 @@ import {
   ScreeningAnswers,
   ScreeningProgressUpdate,
 } from '../types/screening';
-import { extractResumeContent } from './extractText';
+import { extractResumeContent, TextExtractionResult } from './extractText';
 import { calibrateBatch, createBatch, evaluateResume, fileToBase64 } from './api';
 
 export interface RunnerInput {
@@ -18,27 +18,68 @@ export interface RunnerInput {
 }
 
 /**
+ * A base64 body is ~37% larger than the file itself. Above this size we stop
+ * attaching the original document (the text is still analysed) so a single
+ * huge scan cannot blow up the request payload and stall the queue.
+ */
+const MAX_INLINE_FILE_BYTES = 12 * 1024 * 1024;
+
+/** If nothing has moved for this long, tell the user instead of spinning silently. */
+const STALL_WARNING_MS = 45_000;
+
+const isLikelyMobile = (): boolean =>
+  typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent || '');
+
+const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+
+function extractConcurrency(total: number): number {
+  const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+  const base = isLikelyMobile() ? 2 : clamp(Math.floor(cores / 2), 2, 4);
+  return clamp(base, 1, Math.max(1, total));
+}
+
+function evalConcurrency(total: number): number {
+  // 4 parallel Gemini calls used to trip rate limits and make the whole batch
+  // look frozen. 2–3 in flight is both faster in practice and kinder to memory.
+  const base = isLikelyMobile() ? 2 : 3;
+  return clamp(base, 1, Math.max(1, total));
+}
+
+/**
  * Runs a full screening batch:
  *  1) create server batch (persists job understanding + answers)
  *  2) extract text client-side (PDF/DOCX/ZIP already unpacked at upload time)
- *  3) send each resume (with the original file) to the AI evaluator, 2 at a time
+ *  3) send each resume to the AI evaluator with bounded concurrency
  *  4) calibrate top & borderline candidates
+ *
+ * Robustness contract: a single bad file, a dead network or a slow model must
+ * never be able to hang the batch. Every awaited call carries the caller's
+ * AbortSignal and a deadline, and worker failures are captured per item.
  */
 export async function runScreeningBatch(
   input: RunnerInput,
   onProgress: (u: ScreeningProgressUpdate) => void,
   signal?: AbortSignal
 ): Promise<{ batchId: string; aiCount: number; localCount: number }> {
-  const batch = await createBatch({
-    departmentId: input.departmentId,
-    roleTitle: input.roleTitle,
-    extraNotes: input.extraNotes,
-    understanding: input.understanding,
-    answers: input.answers,
-  });
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  };
+
+  const batch = await createBatch(
+    {
+      departmentId: input.departmentId,
+      roleTitle: input.roleTitle,
+      extraNotes: input.extraNotes,
+      understanding: input.understanding,
+      answers: input.answers,
+    },
+    { signal }
+  );
 
   const items: ResumeFileItem[] = input.files.map((f) => ({ ...f, status: 'queued' }));
   const total = items.length;
+  const extractionByItem = new Map<string, TextExtractionResult>();
+  const base64ByItem = new Map<string, string>();
   let processed = 0;
   let extractedCount = 0;
   let aiCount = 0;
@@ -47,8 +88,14 @@ export async function runScreeningBatch(
   const activeEvaluating = new Set<string>();
 
   const startTime = Date.now();
+  /** Touched only on real progress, so a stall can actually be detected. */
+  let lastProgressAt = Date.now();
+  const markProgress = () => {
+    lastProgressAt = Date.now();
+  };
   let activeTick = 0;
   let highWatermarkPercent = 0;
+  let lastEmitAt = 0;
 
   const computeOverallPercent = (): number => {
     if (currentPhase === 'done') return 100;
@@ -83,11 +130,17 @@ export async function runScreeningBatch(
     return Math.min(highWatermarkPercent, 98);
   };
 
-  const emit = (statusText: string, current?: string, subStatusText?: string) => {
+  const emit = (statusText: string, current?: string, subStatusText?: string, force = true) => {
+    // Coalesce high-frequency updates (ZIP unpacking, 200-file batches) so the
+    // UI thread is never flooded; meaningful transitions always pass through.
+    const now = Date.now();
+    if (!force && now - lastEmitAt < 120) return;
+    lastEmitAt = now;
+
     let speedPerMinute: number | undefined;
     let estimatedSecondsRemaining: number | undefined;
 
-    const EVAL_CONCURRENCY = Math.min(4, Math.max(1, total));
+    const workers = evalConcurrency(total);
 
     if (currentPhase === 'done') {
       estimatedSecondsRemaining = 0;
@@ -95,7 +148,11 @@ export async function runScreeningBatch(
       estimatedSecondsRemaining = 1;
     } else if (currentPhase === 'extracting') {
       const remainingExt = Math.max(0, total - extractedCount);
-      estimatedSecondsRemaining = Math.max(2, Math.ceil(remainingExt * 0.2 + (total * 2.5) / EVAL_CONCURRENCY));
+      const extWorkers = extractConcurrency(total);
+      estimatedSecondsRemaining = Math.max(
+        2,
+        Math.ceil((remainingExt * 1.5) / extWorkers + (total * 2.5) / workers)
+      );
     } else if (currentPhase === 'evaluating') {
       const remaining = Math.max(0, total - processed);
       if (processed > 0) {
@@ -104,10 +161,16 @@ export async function runScreeningBatch(
         speedPerMinute = Math.round(ratePerSec * 60);
         estimatedSecondsRemaining = Math.max(1, Math.round(remaining / (ratePerSec || 0.35)));
       } else {
-        const effectiveWorkers = Math.min(EVAL_CONCURRENCY, Math.max(1, remaining));
+        const effectiveWorkers = Math.min(workers, Math.max(1, remaining));
         estimatedSecondsRemaining = Math.max(2, Math.ceil((remaining * 2.8) / effectiveWorkers));
       }
     }
+
+    const stalledFor = Date.now() - lastProgressAt;
+    const warningText =
+      currentPhase !== 'done' && stalledFor > STALL_WARNING_MS
+        ? 'پاسخ سرور طولانی شده است؛ هوشا همچنان در تلاش است. در صورت نیاز می‌توانید لغو کنید.'
+        : undefined;
 
     onProgress({
       items: [...items],
@@ -122,56 +185,87 @@ export async function runScreeningBatch(
       estimatedSecondsRemaining,
       speedPerMinute,
       overallPercent: computeOverallPercent(),
+      warningText,
     });
   };
 
-  // ---- Step A: Concurrent text extraction (6 parallel workers) ----
+  // ---- Step A: bounded, fault-isolated text extraction ----
   currentPhase = 'extracting';
   emit(`در حال بازخوانی و استخراج محتوای ${total} فایل…`);
 
-  const EXTRACT_CONCURRENCY = Math.min(6, items.length);
+  const EXTRACT_CONCURRENCY = extractConcurrency(items.length);
   let extractNext = 0;
 
   async function extractWorker() {
     while (extractNext < items.length) {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      throwIfAborted();
       const idx = extractNext++;
       const item = items[idx];
       item.status = 'extracting';
-      emit(`در حال استخراج محتوا: ${item.name} (${extractedCount + 1} از ${total})`, item.name);
+      emit(
+        `در حال استخراج محتوا: ${item.name} (${extractedCount + 1} از ${total})`,
+        item.name,
+        undefined,
+        false
+      );
 
-      if (item.file) {
-        const [extraction, base64] = await Promise.all([
-          extractResumeContent(item.file, item.name),
-          fileToBase64(item.file).catch(() => undefined),
-        ]);
-        item.extractedText = extraction.text;
-        (item as any).cachedBase64 = base64;
+      try {
+        if (item.file) {
+          // Extraction and base64 run in parallel, but the base64 is only kept
+          // when it can actually be used (see MAX_INLINE_FILE_BYTES).
+          const wantsAttachment = item.file.size <= MAX_INLINE_FILE_BYTES;
+          const [extraction, base64] = await Promise.all([
+            extractResumeContent(item.file, item.name),
+            wantsAttachment ? fileToBase64(item.file).catch(() => undefined) : Promise.resolve(undefined),
+          ]);
+          item.extractedText = extraction.text;
+          extractionByItem.set(item.id, extraction);
+          if (base64) base64ByItem.set(item.id, base64);
 
-        if (extraction.isVisualDocument) {
-          // Visual document (image or scanned PDF) - queue for Gemini native vision processing
-          item.status = 'queued';
-        } else if (!extraction.success) {
-          item.status = 'unjudgeable';
-          item.unjudgeableReason = extraction.unjudgeableReason || 'امکان استخراج محتوا وجود ندارد';
+          if (extraction.isVisualDocument) {
+            // Visual document (image or scanned PDF) - queue for Gemini native vision processing
+            item.status = 'queued';
+          } else if (!extraction.success) {
+            item.status = 'unjudgeable';
+            item.unjudgeableReason = extraction.unjudgeableReason || 'امکان استخراج محتوا وجود ندارد';
+          } else {
+            item.status = 'queued';
+          }
         } else {
           item.status = 'queued';
         }
-      } else {
-        item.status = 'queued';
+      } catch (err: any) {
+        if (err?.name === 'AbortError') throw err;
+        // One unreadable file must not take the whole queue down with it.
+        item.status = 'unjudgeable';
+        item.unjudgeableReason = err?.message || 'خطا در بازخوانی فایل';
       }
 
       extractedCount++;
-      emit(`استخراج محتوا: ${extractedCount} از ${total} رزومه پایان یافت…`, item.name);
+      markProgress();
+      emit(`استخراج محتوا: ${extractedCount} از ${total} رزومه پایان یافت…`, item.name, undefined, false);
     }
   }
 
-  await Promise.all(Array.from({ length: EXTRACT_CONCURRENCY }, () => extractWorker()));
+  const extractResults = await Promise.allSettled(
+    Array.from({ length: EXTRACT_CONCURRENCY }, () => extractWorker())
+  );
+  const extractAbort = extractResults.find(
+    (r) => r.status === 'rejected' && (r.reason as any)?.name === 'AbortError'
+  );
+  if (extractAbort) throw (extractAbort as PromiseRejectedResult).reason;
+  // Any other worker failure leaves its items marked; keep going.
+  extractResults.forEach((r) => {
+    if (r.status === 'rejected') console.warn('[runner] extraction worker failed:', r.reason);
+  });
+
+  throwIfAborted();
+  markProgress();
   emit('استخراج محتوا با موفقیت به پایان رسید؛ آغاز تحلیل هوشا…');
 
-  // ---- Step B: AI evaluation with 4 parallel workers ----
+  // ---- Step B: AI evaluation with bounded parallelism ----
   currentPhase = 'evaluating';
-  const EVAL_CONCURRENCY = Math.min(4, Math.max(1, items.length));
+  const EVAL_CONCURRENCY = evalConcurrency(items.length);
   let next = 0;
 
   const microSteps = [
@@ -181,41 +275,54 @@ export async function runScreeningBatch(
     'محاسبه امتیاز شایستگی و رتبه‌بندی نهایی…',
   ];
 
+  // Kept at 1s (was 400ms): it only drives the cosmetic in-flight animation,
+  // and every tick re-renders the whole progress view.
   const heartbeat = setInterval(() => {
     if (activeEvaluating.size > 0 && currentPhase === 'evaluating') {
       activeTick++;
       const currentName = Array.from(activeEvaluating)[0];
       const stepText = microSteps[activeTick % microSteps.length];
       emit(`هوشا در حال تحلیل «${currentName}»…`, currentName, stepText);
+    } else if (currentPhase !== 'done' && Date.now() - lastProgressAt > STALL_WARNING_MS) {
+      // Nothing in flight but nothing finished either — surface the stall.
+      emit('در انتظار پاسخ سرور…', undefined, undefined);
     }
-  }, 400);
+  }, 1000);
 
   async function evalWorker() {
     while (next < items.length) {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      throwIfAborted();
       const idx = next++;
       const item = items[idx];
+
+      const attachment = base64ByItem.get(item.id);
 
       if (item.status === 'unjudgeable') {
         // Persist extraction failures too (gray "unjudgeable" section)
         if (item.file) {
           try {
-            const base64 = await fileToBase64(item.file);
-            const { record } = await evaluateResume({
-              batchId: batch.id,
-              fileName: item.name,
-              extractedText: '',
-              unjudgeableReason: item.unjudgeableReason || 'فایل قابل‌تحلیل نیست',
-              fileBase64: base64,
-            });
+            const { record } = await evaluateResume(
+              {
+                batchId: batch.id,
+                fileName: item.name,
+                extractedText: '',
+                unjudgeableReason: item.unjudgeableReason || 'فایل قابل‌تحلیل نیست',
+                fileBase64: attachment,
+              },
+              { signal }
+            );
             item.recordId = record.id;
             item.category = record.category;
-          } catch {
+          } catch (err: any) {
+            if (err?.name === 'AbortError') throw err;
             item.status = 'error';
-            item.errorMessage = 'ثبت فایل ناموفق بود';
+            item.errorMessage = err?.message || 'ثبت فایل ناموفق بود';
+          } finally {
+            base64ByItem.delete(item.id);
           }
         }
         processed++;
+        markProgress();
         emit(`بررسی ${processed} از ${total} انجام شد…`);
         continue;
       }
@@ -225,16 +332,16 @@ export async function runScreeningBatch(
       emit(`هوشا در حال تحلیل «${item.name}»…`, item.name, microSteps[0]);
 
       try {
-        const base64 =
-          (item as any).cachedBase64 ||
-          (item.file ? await fileToBase64(item.file).catch(() => undefined) : undefined);
-        const { record } = await evaluateResume({
-          batchId: batch.id,
-          fileName: item.name,
-          extractedText: item.extractedText || '',
-          unjudgeableReason: null,
-          fileBase64: base64,
-        });
+        const { record } = await evaluateResume(
+          {
+            batchId: batch.id,
+            fileName: item.name,
+            extractedText: item.extractedText || '',
+            unjudgeableReason: null,
+            fileBase64: attachment,
+          },
+          { signal }
+        );
 
         item.recordId = record.id;
         item.category = record.category;
@@ -253,21 +360,21 @@ export async function runScreeningBatch(
           item.unjudgeableReason = record.unjudgeableReason || 'اطلاعات رزومه برای قضاوت کافی نیست';
         }
       } catch (err: any) {
-        if (signal?.aborted) throw err;
+        if (err?.name === 'AbortError' || signal?.aborted) throw err;
         // Try to persist the failure as an ERROR record so the file stays
         // visible (and retryable) in the results instead of disappearing.
         try {
-          const base64 =
-            (item as any).cachedBase64 ||
-            (item.file ? await fileToBase64(item.file).catch(() => undefined) : undefined);
-          const { record } = await evaluateResume({
-            batchId: batch.id,
-            fileName: item.name,
-            extractedText: item.extractedText || '',
-            unjudgeableReason: null,
-            fileBase64: base64,
-            errorMessage: err?.message || 'خطا در تحلیل',
-          });
+          const { record } = await evaluateResume(
+            {
+              batchId: batch.id,
+              fileName: item.name,
+              extractedText: item.extractedText || '',
+              unjudgeableReason: null,
+              fileBase64: attachment,
+              errorMessage: err?.message || 'خطا در تحلیل',
+            },
+            { signal }
+          );
           item.recordId = record.id;
           item.category = record.category;
         } catch {
@@ -276,29 +383,43 @@ export async function runScreeningBatch(
         item.status = 'error';
         item.errorMessage = err?.message || 'خطا در تحلیل';
       } finally {
+        // Release the base64 copy as soon as it is no longer needed; holding
+        // every file in memory is what killed the tab on phones.
+        base64ByItem.delete(item.id);
         activeEvaluating.delete(item.name);
         processed++;
+        markProgress();
         emit(`تحلیل هوشا ${processed} از ${total} تمام شد…`, item.name);
       }
     }
   }
 
-  const evalWorkers = Array.from({ length: EVAL_CONCURRENCY }, () => evalWorker());
-  try {
-    await Promise.all(evalWorkers);
-  } finally {
-    clearInterval(heartbeat);
-  }
+  const evalResults = await Promise.allSettled(
+    Array.from({ length: EVAL_CONCURRENCY }, () => evalWorker())
+  ).finally(() => clearInterval(heartbeat));
+
+  const evalAbort = evalResults.find(
+    (r) => r.status === 'rejected' && (r.reason as any)?.name === 'AbortError'
+  );
+  if (evalAbort) throw (evalAbort as PromiseRejectedResult).reason;
+  evalResults.forEach((r) => {
+    if (r.status === 'rejected') console.warn('[runner] evaluation worker failed:', r.reason);
+  });
 
   // ---- Step C: relative calibration (only needed if > 1 candidate) ----
   if (!signal?.aborted && items.length > 1) {
     currentPhase = 'calibrating';
+    markProgress();
     emit('در حال کالیبراسیون نهایی و رتبه‌بندی عادلانه داوطلبان…');
-    await calibrateBatch(batch.id).catch((e) => console.warn('calibration skipped', e));
+    await calibrateBatch(batch.id, { signal }).catch((e) => console.warn('calibration skipped', e));
   }
 
   currentPhase = 'done';
   emit('فرآیند تحلیل و غربالگری با موفقیت کامل شد.');
+
+  // Free the caches once the batch is over.
+  extractionByItem.clear();
+  base64ByItem.clear();
 
   return { batchId: batch.id, aiCount, localCount };
 }

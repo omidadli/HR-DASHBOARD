@@ -126,6 +126,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Thrown instead of a model call while the breaker is open. */
+export const CIRCUIT_OPEN = 'GEMINI_CIRCUIT_OPEN';
+
 export function isGeminiCircuitOpen(): boolean {
   return Date.now() < circuitOpenUntil;
 }
@@ -137,27 +140,68 @@ export function recordGeminiFailure(isQuota: boolean, isHighDemand: boolean) {
   // 503 high demand spikes are temporary model-level spikes, not quota depletion
   if (isHighDemand) return;
   circuitConsecutiveFailures++;
-  if (circuitConsecutiveFailures >= 4) {
-    const cooldownMs = isQuota ? 15_000 : 5_000;
+  if (circuitConsecutiveFailures >= 3) {
+    // Long enough to let a rate-limited key recover, short enough that the user
+    // does not have to wait through a whole batch of failing calls.
+    const cooldownMs = isQuota ? 30_000 : 10_000;
     circuitOpenUntil = Date.now() + cooldownMs;
   }
 }
 
+/** 400/401/403/404 mean the key or model name is wrong — retrying is pointless. */
+function isFatalAuthError(err: any): boolean {
+  const status = err?.status || err?.code;
+  const msg = String(err?.message || '');
+  return (
+    status === 400 ||
+    status === 401 ||
+    status === 403 ||
+    status === 404 ||
+    /API key not valid|API_KEY_INVALID|PERMISSION_DENIED|NOT_FOUND|is not found/i.test(msg)
+  );
+}
+
+/**
+ * One Gemini call with a small, *bounded* retry budget.
+ *
+ * Previously this walked 4 candidate models × 2 attempts × 18 s and ignored the
+ * circuit breaker entirely, so a rate-limited key made every single resume burn
+ * ~2.5 minutes before falling back to the local engine — a 5-resume batch then
+ * looked completely frozen. Now: the breaker is honoured, fatal auth errors stop
+ * immediately, and a hard deadline caps the whole operation.
+ */
 async function generateWithFallback(
   contents: string | { parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> },
-  config?: { temperature?: number; responseMimeType?: string; timeoutMs?: number }
+  config?: {
+    temperature?: number;
+    responseMimeType?: string;
+    timeoutMs?: number;
+    /** Absolute budget for all models + retries. */
+    deadlineMs?: number;
+  }
 ): Promise<string> {
+  if (isGeminiCircuitOpen()) {
+    throw new Error(CIRCUIT_OPEN);
+  }
+
   const client = getGeminiClient();
   const primary = resolveGeminiModel();
-  const candidateModels = Array.from(
-    new Set([primary, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'])
-  );
-  const timeoutMs = config?.timeoutMs ?? 18_000;
+  // Two models is enough: a third/fourth candidate only added minutes of latency
+  // in the failure path without measurably improving success.
+  const candidateModels = Array.from(new Set([primary, 'gemini-2.5-flash']));
+  const perCallTimeout = config?.timeoutMs ?? 18_000;
+  const deadline = Date.now() + (config?.deadlineMs ?? 45_000);
 
   let lastError: any = null;
-  for (const model of candidateModels) {
+
+  outer: for (const model of candidateModels) {
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break outer;
+      const timeoutMs = Math.max(2_000, Math.min(perCallTimeout, remaining));
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const thinkingConfig = model.includes('2.5')
           ? { thinkingBudget: 0 }
@@ -172,26 +216,37 @@ async function generateWithFallback(
             thinkingConfig,
           },
         });
-        const timeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms on ${model}`)), timeoutMs)
-        );
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`Timeout after ${timeoutMs}ms on ${model}`)),
+            timeoutMs
+          );
+        });
         const res = await Promise.race([call, timeout]);
         if (res.text) {
           recordGeminiSuccess();
           return res.text;
         }
+        lastError = new Error(`مدل ${model} پاسخ متنی برنگرداند`);
       } catch (err: any) {
         lastError = err;
         const msg = String(err?.message || '');
         const isHighDemand = err?.status === 503 || /503|UNAVAILABLE|overloaded|high demand/i.test(msg);
-        if (isHighDemand && attempt < maxAttempts) {
+        if (isFatalAuthError(err)) {
+          // Same key for every model — stop the whole cascade now.
+          break outer;
+        }
+        if (isHighDemand && attempt < maxAttempts && Date.now() + 1500 < deadline) {
           await sleep(1000 + Math.floor(Math.random() * 500));
           continue;
         }
         break;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }
   }
+
   const lastMsg = String(lastError?.message || '');
   const isQuota = lastError?.status === 429 || /429|quota|RESOURCE_EXHAUSTED/i.test(lastMsg);
   const isHighDemand = lastError?.status === 503 || /503|UNAVAILABLE|overloaded|high demand/i.test(lastMsg);
@@ -631,7 +686,11 @@ ${extraNotes?.trim() ? `توضیحات تکمیلی کاربر:\n"""\n${extraNot
 ${QUESTION_EXAMPLE_JSON}`;
 
   const callAndRepair = async (): Promise<JobUnderstanding | null> => {
-    const raw = await generateWithFallback(prompt, { temperature: 0.2, timeoutMs: 20_000 });
+    const raw = await generateWithFallback(prompt, {
+      temperature: 0.2,
+      timeoutMs: 20_000,
+      deadlineMs: 25_000,
+    });
     const parsed = cleanAndParseJson<any>(raw, null);
     if (!parsed) return null;
     return repairUnderstanding(parsed, departmentId, roleTitle.trim());
@@ -862,12 +921,16 @@ ${normalized.slice(0, 8500)}
         }
       : prompt;
 
-    const raw = await generateWithFallback(contents, { temperature: 0.1, timeoutMs: 18_000 });
+    const raw = await generateWithFallback(contents, {
+      temperature: 0.1,
+      timeoutMs: 18_000,
+      deadlineMs: 40_000,
+    });
     const parsed = cleanAndParseJson<any>(raw, null);
     if (!parsed) throw new Error('malformed evaluation');
     return finalizeEvaluation(parsed, understanding, answers, 'ai');
   } catch (err: any) {
-    if (err?.message !== 'GEMINI_CIRCUIT_OPEN') {
+    if (err?.message !== CIRCUIT_OPEN) {
       console.log(`[evaluateResumeV2] «${fileName}» → local engine (${err?.message || 'err'})`);
     }
     return evaluateResumeLocal(normalized || fileName, understanding, answers, fileName);
@@ -1153,7 +1216,11 @@ ${JSON.stringify(candidates.slice(0, 40), null, 2)}
 فقط JSON: { "adjustments": { "id1": 82, "id2": 71 } }`;
 
   try {
-    const raw = await generateWithFallback(prompt, { temperature: 0.1, timeoutMs: 20_000 });
+    const raw = await generateWithFallback(prompt, {
+      temperature: 0.1,
+      timeoutMs: 20_000,
+      deadlineMs: 40_000,
+    });
     const parsed = cleanAndParseJson<{ adjustments: Record<string, number> }>(raw, { adjustments: {} });
     const out: Record<string, number> = {};
     for (const [id, val] of Object.entries(parsed.adjustments || {})) {
@@ -1233,7 +1300,11 @@ export async function draftMessageV2(
 - خروجی فقط JSON: { "subject": "موضوع کوتاه", "body": "متن کامل با \\n برای خط جدید" }`;
 
   try {
-    const raw = await generateWithFallback(prompt, { temperature: 0.4, timeoutMs: 15_000 });
+    const raw = await generateWithFallback(prompt, {
+      temperature: 0.4,
+      timeoutMs: 15_000,
+      deadlineMs: 25_000,
+    });
     const parsed = cleanAndParseJson<{ subject?: string; body?: string }>(raw, {});
     if (parsed.body && parsed.body.trim().length > 30) {
       return { kind, subject: parsed.subject?.trim() || KIND_TITLES[kind], body: parsed.body.trim() };

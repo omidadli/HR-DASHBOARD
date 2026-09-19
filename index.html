@@ -11,14 +11,196 @@
     <meta name="theme-color" content="#00C87B" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="format-detection" content="telephone=no" />
     <link rel="icon" type="image/svg+xml" href="/silaneh-logo.svg" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@100..900&display=swap" rel="stylesheet">
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/Vazirmatn-var.woff2" crossorigin />
+
+    <!--
+      Critical CSS — deliberately plain (no @layer / @property / color-mix).
+      It must survive on old Safari/iOS where the bundled Tailwind v4 output is
+      partially unsupported, and it must not depend on any third-party origin
+      (the previous Google Fonts <link> was render-blocking and, when that host
+      was slow or unreachable, the page stayed blank for tens of seconds).
+    -->
+    <style>
+      @font-face {
+        font-family: 'Vazirmatn';
+        src: url('/fonts/Vazirmatn-var.woff2') format('woff2');
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'Vazirmatn';
+        src: url('/fonts/Vazirmatn-Regular.woff2') format('woff2');
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'Vazirmatn';
+        src: url('/fonts/Vazirmatn-Medium.woff2') format('woff2');
+        font-weight: 500;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'Vazirmatn';
+        src: url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      html { background: #f6f8f6; }
+      body {
+        margin: 0;
+        background-color: #f6f8f6;
+        color: #121815;
+        font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Tahoma, sans-serif;
+        line-height: 1.6;
+        min-height: 100vh;
+      }
+      #boot-screen {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: #f6f8f6;
+        z-index: 9999;
+        text-align: center;
+        padding: 24px;
+      }
+      #boot-screen .boot-ring {
+        width: 34px; height: 34px;
+        border: 3px solid #d2f9e7;
+        border-top-color: #00c87b;
+        border-radius: 50%;
+        animation: boot-spin 0.9s linear infinite;
+      }
+      #boot-screen .boot-text { font-size: 13px; font-weight: 700; color: #4a554f; }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+      #boot-screen.boot-hidden { display: none; }
+
+      /* Shown instead of a silent blank page when JS/CSS cannot run. */
+      #boot-fatal {
+        position: fixed;
+        inset: 0;
+        z-index: 10000;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: #f6f8f6;
+      }
+      #boot-fatal.boot-shown { display: flex; }
+      #boot-fatal .card {
+        max-width: 460px;
+        width: 100%;
+        background: #fff;
+        border: 1px solid #e3e8e4;
+        border-radius: 14px;
+        padding: 20px;
+        box-shadow: 0 8px 32px rgba(16, 24, 20, 0.14);
+      }
+      #boot-fatal h1 { font-size: 15px; margin: 0 0 8px; color: #121815; }
+      #boot-fatal p { font-size: 12.5px; margin: 0 0 10px; color: #4a554f; }
+      #boot-fatal code {
+        display: block;
+        direction: ltr;
+        text-align: left;
+        font-size: 11px;
+        background: #f0f3f1;
+        border-radius: 8px;
+        padding: 8px;
+        margin: 0 0 14px;
+        color: #73807a;
+        word-break: break-word;
+        max-height: 90px;
+        overflow: auto;
+      }
+      #boot-fatal button {
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 700;
+        color: #fff;
+        background: #00c87b;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 18px;
+        cursor: pointer;
+      }
+    </style>
   </head>
   <body class="bg-surface-0 text-text-1 font-sans antialiased selection:bg-brand/20 selection:text-brand min-h-screen">
     <div id="root"></div>
+
+    <!-- First paint while the JS bundle downloads: never a blank page. -->
+    <div id="boot-screen">
+      <div class="boot-ring"></div>
+      <div class="boot-text">در حال بارگذاری هوشا…</div>
+    </div>
+
+    <!-- Visible failure surface instead of an endless white screen. -->
+    <div id="boot-fatal">
+      <div class="card">
+        <h1>هوشا نتوانست روی این مرورگر اجرا شود</h1>
+        <p>
+          اگر از آیفون یا آیپد استفاده می‌کنید، لطفاً iOS را به نسخه ۱۶.۴ یا بالاتر به‌روزرسانی کنید
+          (Settings › General › Software Update) یا سایت را در کروم باز کنید.
+        </p>
+        <code id="boot-fatal-detail"></code>
+        <button type="button" onclick="location.reload()">تلاش دوباره</button>
+      </div>
+    </div>
+
+    <script>
+      // Any uncaught failure during boot must be visible, not a silent blank page.
+      (function () {
+        var boot = document.getElementById('boot-screen');
+        var fatal = document.getElementById('boot-fatal');
+        var detail = document.getElementById('boot-fatal-detail');
+        var failed = false;
+
+        function hideBoot() {
+          if (boot && boot.parentNode) boot.parentNode.removeChild(boot);
+        }
+        function showFatal(message) {
+          if (failed) return;
+          failed = true;
+          hideBoot();
+          if (detail) detail.textContent = String(message || 'خطای نامشخص');
+          if (fatal) fatal.className = 'boot-shown';
+        }
+
+        window.__hooshaBoot = { hide: hideBoot, fail: showFatal };
+
+        window.addEventListener('error', function (e) {
+          // Only surface failures that happened before React took over.
+          var root = document.getElementById('root');
+          if (root && root.childElementCount > 0) return;
+          showFatal((e && (e.message || (e.error && e.error.message))) || 'خطای ناشناخته');
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          var root = document.getElementById('root');
+          if (root && root.childElementCount > 0) return;
+          var reason = e && e.reason;
+          showFatal((reason && (reason.message || reason)) || 'خطای ناشناخته');
+        });
+
+        // Hard watchdog: if React never mounted, say so instead of spinning forever.
+        setTimeout(function () {
+          var root = document.getElementById('root');
+          if (!root || root.childElementCount === 0) {
+            showFatal('بارگذاری برنامه بیش از حد طول کشید. اتصال اینترنت را بررسی کنید.');
+          }
+        }, 20000);
+      })();
+    </script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

@@ -1,6 +1,6 @@
 # Render Blueprint — دستیار غربالگری رزومه سیلانه سبز
 # داده‌ها روی دیسک سرویس (فایل JSON در پوشه data/) نگهداری می‌شوند؛
-# برای حفظ دائمی داده‌ها هنگام دیپلوی، یک دیسک مانت‌شده روی ./data لازم است.
+# دیسک مانت‌شده زیر برای بقای داده‌ها پس از هر ری‌دیپلوی ضروری است.
 
 services:
   - type: web
@@ -14,10 +14,21 @@ services:
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
+    # Without this disk, data/screening-store.json and data/resumes/ live on the
+    # ephemeral root filesystem and every deploy silently wipes all screening
+    # history, talent-bank entries and the original resume files.
+    disk:
+      name: seilaneh-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      # server.ts reads PORT from the environment (it used to be hardcoded to
+      # 3000, which made this health check unreachable and the deploy fail).
       - key: PORT
         value: "10000"
       - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
         sync: false
