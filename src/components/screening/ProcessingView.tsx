@@ -45,6 +45,7 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
     estimatedSecondsRemaining,
     speedPerMinute,
     overallPercent,
+    warningText,
   } = progress;
 
   // Granular, weighted target percentage across the entire screening pipeline
@@ -392,6 +393,13 @@ export const ProcessingView: React.FC<ProcessingViewProps> = ({ progress, error,
           ))}
         </div>
       </div>
+
+      {warningText && !error ? (
+        <div className="w-full p-3 rounded-control bg-warning-soft border border-[var(--warning-border)] text-warning-text text-xs font-bold flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 text-warning" />
+          <span>{warningText}</span>
+        </div>
+      ) : null}
 
       {error ? (
         <div className="w-full p-3.5 rounded-control bg-danger-soft border border-[var(--danger-border)] text-danger text-xs font-bold text-center">

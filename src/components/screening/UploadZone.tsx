@@ -3,6 +3,14 @@ import { UploadCloud, FileText, X, CheckCircle, Loader2 } from 'lucide-react';
 import { ResumeFileItem } from '../../types/screening';
 import { formatFileSize, toPersianDigits } from '../../lib/normalizeFa';
 import { processUploadFiles } from '../../lib/extractText';
+import { toast } from '../common/Toast';
+
+/**
+ * Hard per-file ceiling. A single 60 MB scan used to be base64-encoded in the
+ * browser, which could freeze or kill the tab on a phone before any request was
+ * even sent. Rejecting it up front keeps the queue alive for the other files.
+ */
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 interface UploadZoneProps {
   files: ResumeFileItem[];
@@ -25,11 +33,18 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
       const unpacked = await processUploadFiles(raw, (current, total, name) => {
         setUnpackProgress({ current, total, name });
       });
+      let rejected = 0;
       setFiles((prev) => {
-        const keys = new Set(prev.map((f) => `${f.name}_${f.size}`));
+        // name+size+lastModified: two different resumes that merely share a
+        // name and a byte count are no longer silently dropped.
+        const keys = new Set(prev.map((f) => `${f.name}_${f.size}_${f.file?.lastModified ?? ''}`));
         const added: ResumeFileItem[] = [];
         for (const file of unpacked) {
-          const key = `${file.name}_${file.size}`;
+          if (file.size > MAX_FILE_BYTES) {
+            rejected++;
+            continue;
+          }
+          const key = `${file.name}_${file.size}_${file.lastModified}`;
           if (!keys.has(key)) {
             keys.add(key);
             added.push({
@@ -43,6 +58,12 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ files, setFiles, disable
         }
         return [...prev, ...added];
       });
+      if (rejected > 0) {
+        toast(
+          `${toPersianDigits(rejected)} فایل بیش از ۲۰ مگابایت بود و اضافه نشد؛ لطفاً نسخه کم‌حجم‌تر را ارسال کنید.`,
+          'error'
+        );
+      }
     } finally {
       setUnpacking(false);
       setUnpackProgress(null);

@@ -147,6 +147,18 @@ export function getBatch(id: string): ScreeningBatch | null {
   return batches.get(id) || null;
 }
 
+/**
+ * Ownership-guarded lookups. Without these, any client that knew (or guessed) a
+ * resume/batch id could read, re-run, bank or delete another HR user's
+ * candidates — the per-resume routes used to call the unguarded getters.
+ * Requests without an x-user-id still see everything (legacy shared access).
+ */
+export function getBatchForUser(id: string, userId?: string): ScreeningBatch | null {
+  const b = batches.get(id) || null;
+  if (!b) return null;
+  return ownerOk(b.userId, userId) ? b : null;
+}
+
 export function deleteBatch(id: string, userId?: string): boolean {
   const b = batches.get(id);
   if (!b) return false;
@@ -317,6 +329,13 @@ export async function saveEvaluation(input: {
 
 export function getResume(id: string): ResumeRecord | null {
   return resumes.get(id) || null;
+}
+
+/** Ownership-guarded resume lookup — see getBatchForUser. */
+export function getResumeForUser(id: string, userId?: string): ResumeRecord | null {
+  const rec = resumes.get(id) || null;
+  if (!rec) return null;
+  return ownerOk(rec.userId, userId) ? rec : null;
 }
 
 export function updateResumeEvaluation(id: string, ev: CandidateEvaluation): ResumeRecord | null {

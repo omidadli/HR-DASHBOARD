@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Bot } from 'lucide-react';
 import { SilanehLogo } from './SilanehLogo';
 import { Typewriter } from './Typewriter';
@@ -9,59 +9,89 @@ interface SplashScreenProps {
   durationMs?: number;
   /** Returning user's first name — هوشا greets them by name (typed). */
   userName?: string | null;
+  /**
+   * Absolute upper bound. The splash is a full-screen overlay, so if the
+   * typed greeting ever fails to finish the app would be invisible forever.
+   */
+  maxDurationMs?: number;
 }
 
+/**
+ * Splash / greeting overlay.
+ *
+ * It used to depend on a chain of timers that lived in a shared array which a
+ * *different* effect cleared on every re-render — so any parent re-render
+ * during the greeting cancelled the dismissal and the app stayed hidden behind
+ * the overlay. Dismissal is now idempotent, driven by one mount-time watchdog,
+ * and the overlay can always be skipped with a tap.
+ */
 export const SplashScreen: React.FC<SplashScreenProps> = ({
   onComplete,
   durationMs = 600,
   userName,
+  maxDurationMs = 6000,
 }) => {
   const [fading, setFading] = useState(false);
   const [typedDone, setTypedDone] = useState(!userName);
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
+  // Always the latest callback without becoming an effect dependency.
+  const completeRef = useRef(onComplete);
+  completeRef.current = onComplete;
+
+  const doneRef = useRef(false);
+
+  const finish = useCallback(() => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    setFading(true);
+    // Let the fade start, then hand control back to the app.
+    setTimeout(() => completeRef.current(), 200);
+  }, []);
+
+  // Mount-only: watchdog + the no-user fast path.
   useEffect(() => {
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
+    const reduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    // If reduced motion is requested, complete immediately
-    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      onComplete();
+    if (reduced) {
+      if (!doneRef.current) {
+        doneRef.current = true;
+        completeRef.current();
+      }
       return;
     }
 
-    // Without a known user, keep the original short logo splash.
-    if (!userName) {
-      const timer = setTimeout(() => {
-        setFading(true);
-        const exitTimer = setTimeout(onComplete, 250);
-        timers.current.push(exitTimer);
-      }, durationMs);
-      timers.current.push(timer);
-    }
-    // With a user: wait for the typed greeting to finish (handled in the
-    // typing-done effect below).
+    // Hard guarantee: the overlay can never outlive this budget.
+    const watchdog = setTimeout(finish, maxDurationMs);
+    const shortTimer = userName ? undefined : setTimeout(finish, durationMs);
 
     return () => {
-      timers.current.forEach(clearTimeout);
-      timers.current = [];
+      clearTimeout(watchdog);
+      if (shortTimer) clearTimeout(shortTimer);
     };
-  }, [onComplete, durationMs, userName]);
+    // Intentionally mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // After the greeting is fully typed: short hold → fade out → done.
+  // Greeting fully typed → brief hold → finish (still bounded by the watchdog).
   useEffect(() => {
-    if (!typedDone || !userName) return;
-    const hold = setTimeout(() => {
-      setFading(true);
-      timers.current.push(setTimeout(onComplete, 250));
-    }, 1100);
-    timers.current.push(hold);
+    if (!typedDone || !userName || doneRef.current) return;
+    const hold = setTimeout(finish, 900);
     return () => clearTimeout(hold);
-  }, [typedDone, userName, onComplete]);
+  }, [typedDone, userName, finish]);
 
   return (
     <div
-      className={`fixed inset-0 z-[120] bg-gradient-to-b from-surface-0 to-surface-1 flex flex-col items-center justify-center p-6 text-center select-none transition-opacity duration-250 ease-out ${
+      onClick={finish}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') finish();
+      }}
+      aria-label="رد کردن صفحه خوش‌آمدگویی"
+      className={`fixed inset-0 z-[120] bg-gradient-to-b from-surface-0 to-surface-1 flex flex-col items-center justify-center p-6 text-center select-none transition-opacity duration-200 ease-out cursor-pointer ${
         fading ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
       dir="rtl"
@@ -96,7 +126,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
             <h1 className="text-base sm:text-lg font-bold text-text-1">
               هلدینگ دارویی و بهداشتی سیلانه سبز
             </h1>
-            <p className="text-xs text-text-3 font-medium">
+            <p className="text-xs sm:text-text-3 font-medium">
               سامانه هوشمند غربالگری و مدیریت رزومه‌ها
             </p>
           </div>
@@ -105,6 +135,8 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
         <div className="w-24 h-1 rounded-full bg-surface-2 overflow-hidden mt-3">
           <div className="w-full h-full bg-gradient-to-r from-brand-neon to-brand rounded-full animate-pulse shadow-[0_0_8px_rgba(5,229,144,0.6)]" />
         </div>
+
+        <span className="text-[10px] text-text-3">برای رد کردن، لمس کنید</span>
       </div>
     </div>
   );

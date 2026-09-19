@@ -56,7 +56,23 @@ function requestUserId(req: express.Request): string {
 async function startServer() {
   await store.initStore();
   const app = express();
-  app.use(express.json({ limit: '100mb' }));
+  // 30mb is far above any real resume (the client caps inline attachments at
+  // 12mb) and keeps a single oversized request from stalling the event loop.
+  app.use(express.json({ limit: '30mb' }));
+  // A rejected body (too large / malformed) must come back as JSON; otherwise
+  // the client's res.json() fails and the user sees a meaningless failure.
+  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!err) return next();
+    if (err.type === 'entity.too.large') {
+      return res.status(413).json({
+        error: 'حجم درخواست بیش از حد مجاز است. هر رزومه حداکثر ۲۰ مگابایت؛ فایل بزرگ‌تر را فشرده یا تبدیل کنید.',
+      });
+    }
+    if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+      return res.status(400).json({ error: 'درخواست قابل خواندن نیست' });
+    }
+    return next(err);
+  });
 
   // ---------------- Health & meta ----------------
   app.get('/api/health', (_req, res) => {
@@ -127,10 +143,8 @@ async function startServer() {
   });
 
   app.get('/api/screening/batches/:id', (req, res) => {
-    const batch = store.getBatch(req.params.id);
-    // An owned batch is only visible to its owner; unowned (legacy) batches
-    // stay shared.
-    if (!batch || (batch.userId && batch.userId !== requestUserId(req))) {
+    const batch = store.getBatchForUser(req.params.id, requestUserId(req));
+    if (!batch) {
       return res.status(404).json({ error: 'نشست غربالگری یافت نشد' });
     }
     res.json({ batch, resumes: store.listBatchResumes(req.params.id) });
@@ -147,7 +161,7 @@ async function startServer() {
   // ---------------- Evaluate one resume ----------------
   app.post('/api/screening/batches/:id/evaluate', async (req, res) => {
     try {
-      const batch = store.getBatch(req.params.id);
+      const batch = store.getBatchForUser(req.params.id, requestUserId(req));
       if (!batch) return res.status(404).json({ error: 'نشست یافت نشد' });
       const { fileName, extractedText, unjudgeableReason, fileBase64, errorMessage } = req.body || {};
       if (!fileName) return res.status(400).json({ error: 'نام فایل الزامی است' });
@@ -203,7 +217,7 @@ async function startServer() {
       // silently vanish from the batch. If persistence itself fails, fall back
       // to the previous 500 response.
       try {
-        const batch = store.getBatch(req.params.id);
+        const batch = store.getBatchForUser(req.params.id, requestUserId(req));
         const { fileName, extractedText, fileBase64 } = req.body || {};
         if (batch && fileName) {
           const record = await store.saveEvaluation({
@@ -226,7 +240,7 @@ async function startServer() {
   // ---------------- Pass 2: calibration ----------------
   app.post('/api/screening/batches/:id/calibrate', async (req, res) => {
     try {
-      const batch = store.getBatch(req.params.id);
+      const batch = store.getBatchForUser(req.params.id, requestUserId(req));
       if (!batch) return res.status(404).json({ error: 'نشست یافت نشد' });
 
       const pool = store
@@ -274,7 +288,7 @@ async function startServer() {
   // ---------------- Per-resume actions ----------------
   app.post('/api/resumes/:id/rerun', async (req, res) => {
     try {
-      const rec = store.getResume(req.params.id);
+      const rec = store.getResumeForUser(req.params.id, requestUserId(req));
       if (!rec || rec.deleted) return res.status(404).json({ error: 'رزومه یافت نشد' });
       const batch = store.getBatch(rec.batchId);
       if (!batch) return res.status(404).json({ error: 'نشست یافت نشد' });
@@ -298,7 +312,7 @@ async function startServer() {
   });
 
   app.patch('/api/resumes/:id', (req, res) => {
-    const rec = store.getResume(req.params.id);
+    const rec = store.getResumeForUser(req.params.id, requestUserId(req));
     if (!rec || rec.deleted) return res.status(404).json({ error: 'رزومه یافت نشد' });
     const { action } = req.body || {};
     if (action === 'delete') {
@@ -313,7 +327,7 @@ async function startServer() {
   });
 
   app.post('/api/resumes/:id/bank', (req, res) => {
-    const rec = store.getResume(req.params.id);
+    const rec = store.getResumeForUser(req.params.id, requestUserId(req));
     if (!rec || rec.deleted) return res.status(404).json({ error: 'رزومه یافت نشد' });
     const { bankDepartmentId, note, tags } = req.body || {};
     if (!DEPARTMENTS.some((d) => d.id === bankDepartmentId)) {
@@ -328,13 +342,13 @@ async function startServer() {
   });
 
   app.delete('/api/resumes/:id/bank', (req, res) => {
-    const rec = store.getResume(req.params.id);
+    const rec = store.getResumeForUser(req.params.id, requestUserId(req));
     if (!rec) return res.status(404).json({ error: 'رزومه یافت نشد' });
     res.json({ record: store.removeFromBank(rec.id) });
   });
 
   app.get('/api/resumes/:id/file', (req, res) => {
-    const rec = store.getResume(req.params.id);
+    const rec = store.getResumeForUser(req.params.id, requestUserId(req));
     if (!rec || !rec.filePath) return res.status(404).json({ error: 'فایل در دسترس نیست' });
     const full = store.getResumeFilePath(rec.filePath);
     if (!fs.existsSync(full)) return res.status(404).json({ error: 'فایل روی سرور موجود نیست' });
@@ -353,7 +367,7 @@ async function startServer() {
       const { resumeId, kind } = req.body || {};
       const validKinds: MessageKind[] = ['INTERVIEW_INVITE', 'INFO_REQUEST', 'BANK_NOTICE'];
       if (!validKinds.includes(kind)) return res.status(400).json({ error: 'نوع پیام نامعتبر است' });
-      const rec = store.getResume(resumeId);
+      const rec = store.getResumeForUser(String(resumeId), requestUserId(req));
       if (!rec || rec.deleted) return res.status(404).json({ error: 'رزومه یافت نشد' });
       const draft = await draftMessageV2(rec, kind);
       res.json(draft);
@@ -409,12 +423,6 @@ async function startServer() {
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'مسیر API یافت نشد' }));
 
-  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-    console.error('Unhandled error:', err);
-    if (res.headersSent) return next(err);
-    res.status(500).json({ error: 'خطای داخلی سرور' });
-  });
-
   // ---------------- Frontend ----------------
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -424,12 +432,35 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    // Long-lived cached assets, but never the HTML shell (otherwise users keep
+    // loading a stale bundle after a deploy and blame it on their phone).
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+          } else if (/\.(js|css|woff2|svg|png|jpg|mjs)$/.test(filePath)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
-  // Port 3000 is required for AI Studio reverse proxy ingress
-  const PORT = 3000;
+  // Last in the stack, so it also catches errors thrown by the static/SPA layer.
+  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('Unhandled error:', err);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ error: 'خطای داخلی سرور' });
+  });
+
+  /**
+   * PORT was hardcoded to 3000 ("required for AI Studio ingress"), which made
+   * the Render blueprint in render.yaml undeployable: it exports PORT=10000 and
+   * health-checks that port. Honour the environment, default to 3000.
+   */
+  const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`دستیار غربالگری رزومه سیلانه سبز روی پورت ${PORT} آماده است.`);
     const secret = process.env.GEMINI_API_KEY?.trim() || '';

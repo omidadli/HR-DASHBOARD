@@ -245,6 +245,8 @@ export interface ScreeningProgressUpdate {
   estimatedSecondsRemaining?: number;
   speedPerMinute?: number;
   overallPercent?: number;
+  /** Set when nothing has moved for a while — shown as a soft warning. */
+  warningText?: string;
 }
 
 // ---------- Bank ----------
